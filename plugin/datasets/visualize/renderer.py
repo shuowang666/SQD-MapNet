@@ -132,7 +132,8 @@ class Renderer(object):
         '''
 
         car_img = Image.open('resources/car.png')
-        map_path = os.path.join(out_dir, 'map.jpg')
+        map_path = out_dir
+        # map_path = os.path.join(out_dir, 'map.jpg')
 
         plt.figure(figsize=(self.roi_size[0], self.roi_size[1]))
         plt.xlim(-self.roi_size[0] / 2, self.roi_size[0] / 2)

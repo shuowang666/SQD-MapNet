@@ -1,1 +1,1 @@
-from .StreamMapNet import StreamMapNet
+from .SQDMapNet import SQDMapNet

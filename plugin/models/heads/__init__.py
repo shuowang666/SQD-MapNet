@@ -1,5 +1,3 @@
 from .MapDetectorHead import MapDetectorHead
 from .DNMapDetectorHead import DNMapDetectorHead
-from .StreamDNMapDetectorHead import StreamDNMapDetectorHead
-from .StreamDNMapDetectorHead2 import StreamDNMapDetectorHead2
-from .StreamDNMapDetectorHead3 import StreamDNMapDetectorHead3
+from .SQDMapDetectorHead import SQDMapDetectorHead

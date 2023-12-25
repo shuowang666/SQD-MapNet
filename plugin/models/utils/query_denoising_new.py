@@ -374,6 +374,32 @@ class CdnQueryGenerator:
         # 鸡生蛋，蛋生鸡gt
         # known_refers = known_bbox_[:, None, :2] + known_pts * known_bbox_expand[:, None, 2:]
 
+        # 可视化
+        # import matplotlib.pyplot as plt
+        # import numpy as np
+        # from PIL import Image, ImageDraw
+        # import os
+
+        # colors_plt = ['orange', 'b', 'g']
+        # plt.figure(figsize=(2, 4))
+        # plt.xlim(-15.5, 15.5)
+        # plt.ylim(-30.5, 30.5)
+        # plt.axis('off')
+        # import ipdb; ipdb.set_trace()
+        # for k in range(len(prev_lines[i])):
+        #     pts = prev_lines[i][k][0].reshape(-1, 2).cpu().numpy()
+        #     pts = pts * np.array([60, 30]) - np.array([30, 15])
+            
+        #     x = pts[:, 1]
+        #     y = pts[:, 0]
+
+        #     plt.plot(x, y, color=colors_plt[prev_labels[i][k].item()],linewidth=1,alpha=0.8,zorder=-1)
+        #     plt.scatter(x, y, color=colors_plt[prev_labels[i][k].item()],s=2,alpha=0.8,zorder=-1)
+
+        # gt_fixedpts_map_path = os.path.join('/data/code/StreamMapNet/vis', str(self.iter)+'_'+str(vis_idx)+'_prev_gt'+'.png')
+        # plt.savefig(gt_fixedpts_map_path, bbox_inches='tight', format='png',dpi=1200)
+        # plt.close()   
+
         if self.label_noise_scale > 0:
             p = torch.rand_like(known_labels_expand.float())
             chosen_indice = torch.nonzero(

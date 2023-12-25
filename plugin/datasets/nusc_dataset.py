@@ -56,8 +56,16 @@ class NuscDataset(BaseMapDataset):
         Returns:
             result (dict): dict of input
         """
+        # import shutil
+        # idx = 6149
         sample = self.samples[idx]
         location = sample['location']
+
+        # for k, v in sample['cams'].items():
+        #     import ipdb; ipdb.set_trace()
+        #     name = v['img_fpath'].split('/')[-1]
+        #     shutil.copy(v['img_fpath'], '/data/code/StreamMapNet/vis/'+name)
+        
         
         map_geoms = self.map_extractor.get_map_geom(location, sample['e2g_translation'], 
                 sample['e2g_rotation'])

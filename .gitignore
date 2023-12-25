@@ -143,3 +143,6 @@ demo/
 # softlinks
 av2
 nuScenes
+
+ckpts
+vis_old

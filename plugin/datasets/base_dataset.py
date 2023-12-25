@@ -237,7 +237,7 @@ class BaseMapDataset(Dataset):
         result_dict = self.evaluator.evaluate(result_path, logger=logger)
         return result_dict
 
-    def show_gt(self, idx, out_dir='demo/'):
+    def show_gt(self, idx, out_dir='demo/', show_img=True):
         '''Visualize ground-truth.
 
         Args:
@@ -257,6 +257,11 @@ class BaseMapDataset(Dataset):
         cam_extrinsics = sample['cam_extrinsics']
         cam_intrinsics = sample['cam_intrinsics']
 
+        tmp_dir = sample['img_filenames'][0].split('/')[-1]
+        out_dir = os.path.join(out_dir, tmp_dir.split('__')[0] + '_' + tmp_dir.split('__')[2][:-4])
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir)
+
         if 'vectors' in data:
             vectors = data['vectors']
             if isinstance(vectors, DataContainer):
@@ -270,9 +275,10 @@ class BaseMapDataset(Dataset):
             #         v[:, :2] = v[:, :2] * (roi_size + 1e-5) + origin
             #         vector_list[i] = v
             
-            self.renderer.render_bev_from_vectors(vectors, out_dir)
-            self.renderer.render_camera_views_from_vectors(vectors, imgs, 
-                cam_extrinsics, cam_intrinsics, 2, out_dir)
+            self.renderer.render_bev_from_vectors(vectors, os.path.join(out_dir, 'gt.jpg'))
+            if show_img:
+                self.renderer.render_camera_views_from_vectors(vectors, imgs, 
+                    cam_extrinsics, cam_intrinsics, 2, out_dir)
 
         if 'semantic_mask' in data:
             semantic_mask = data['semantic_mask']
@@ -301,6 +307,11 @@ class BaseMapDataset(Dataset):
         cam_extrinsics = sample['cam_extrinsics']
         cam_intrinsics = sample['cam_intrinsics']
 
+        tmp_dir = sample['img_filenames'][0].split('/')[-1]
+        out_dir = os.path.join(out_dir, tmp_dir.split('__')[0] + '_' + tmp_dir.split('__')[2][:-4])
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir)
+
         if output_format == 'raster':
             semantic_mask = results['semantic_mask'].numpy()
             self.renderer.render_bev_from_mask(semantic_mask, out_dir)
@@ -319,7 +330,7 @@ class BaseMapDataset(Dataset):
                     else:
                         vectors[label].append(v)
 
-            self.renderer.render_bev_from_vectors(vectors, out_dir, draw_scores=draw_score)
+            self.renderer.render_bev_from_vectors(vectors, os.path.join(out_dir, 'pred.jpg'), draw_scores=draw_score)
             # self.renderer.render_camera_views_from_vectors(vectors, imgs, 
             #         cam_extrinsics, cam_intrinsics, 2, out_dir)
 
