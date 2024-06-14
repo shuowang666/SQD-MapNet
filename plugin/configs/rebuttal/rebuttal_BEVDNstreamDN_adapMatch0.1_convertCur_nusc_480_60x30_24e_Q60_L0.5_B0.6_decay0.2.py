@@ -1,6 +1,8 @@
 _base_ = [
-    './_base_/default_runtime.py'
+    '../_base_/default_runtime.py'
 ]
+
+# 把上一帧gt转到当前帧后再做DN
 
 # model type
 type = 'Mapper'
@@ -68,7 +70,7 @@ num_points = 20
 permute = True
 
 model = dict(
-    type='StreamMapNet',
+    type='SQDMapNet',
     roi_size=roi_size,
     bev_h=bev_h,
     bev_w=bev_w,
@@ -86,7 +88,7 @@ model = dict(
             depth=50,
             num_stages=4,
             out_indices=(1, 2, 3),
-            frozen_stages=1,
+            frozen_stages=-1,
             norm_cfg=norm_cfg,
             norm_eval=True,
             style='caffe',
@@ -143,7 +145,11 @@ model = dict(
             ),
     ),
     head_cfg=dict(
-        type='DNMapDetectorHead',
+        type='DNSQDMapDetectorHead',
+        dn_iter=0,
+        # dn_iter=num_epochs_single_frame*num_iters_per_epoch,
+        tolerant_noise=0.1,
+        noise_decay_scale=[0.2, 0.2, 0.2],
         num_queries=num_queries,
         embed_dims=embed_dims,
         num_classes=num_class,
@@ -158,13 +164,14 @@ model = dict(
             hidden_dim=embed_dims//2,
             num_queries=num_queries,
             num_classes=num_class,
-            noise_scale=dict(label=0.5, box=0.4, pt=0.0),  # 0.5, 0.4 for DN-DETR
-            group_cfg=dict(dynamic=True, num_groups=None, num_dn_queries=40),
+            noise_scale=dict(label=0.5, box=0.6, pt=0.0),  # 0.5, 0.4 for DN-DETR
+            group_cfg=dict(dynamic=True, num_groups=1, num_dn_queries=60),
             bev_h=bev_h, bev_w=bev_w,
             pc_range=pc_range,
             voxel_size=[0.1, 0.1],
             num_pts_per_vec=num_points,
-            rotate_range=0.0,),
+            rotate_range=0.0,
+            noise_decay=True),
         streaming_cfg=dict(
             streaming=True,
             batch_size=batch_size,
@@ -255,7 +262,14 @@ model = dict(
                     ),
                 ),
         ),
-    streaming_cfg=dict(),
+    streaming_cfg=dict(
+        streaming_bev=True,
+        batch_size=batch_size,
+        fusion_cfg=dict(
+            type='ConvGRU',
+            out_channels=bev_embed_dims,
+        )
+    ),
     model_name='SingleStage'
 )
 
@@ -270,6 +284,7 @@ train_pipeline = [
         permute=permute,
     ),
     dict(type='LoadMultiViewImagesFromFiles', to_float32=True),
+    # dict(type='LoadIDFromFiles', root='./datasets/nuScenes/vectors', normalize=True, roi_size=roi_size),
     dict(type='PhotoMetricDistortionMultiViewImage'),
     dict(type='ResizeMultiViewImages',
          size=img_size, # H, W
@@ -357,11 +372,12 @@ data = dict(
         pipeline=test_pipeline,
         eval_config=eval_config,
         test_mode=True,
-        seq_split_num=-1,
+        seq_split_num=1,
     ),
     shuffler_sampler=dict(
         type='InfiniteGroupEachSampleInBatchSampler',
         seq_split_num=2,
+        # num_iters_to_seq=0,
         num_iters_to_seq=num_epochs_single_frame*num_iters_per_epoch,
         random_drop=0.0
     ),
@@ -402,3 +418,4 @@ log_config = dict(
     ])
 
 SyncBN = False
+# resume_from = "work_dirs/streamDN_convertCur_new_nusc_480_60x30_24e_Group1_L0.0_B0.0/iter_3480.pth"

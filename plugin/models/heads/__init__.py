@@ -1,3 +1,4 @@
 from .MapDetectorHead import MapDetectorHead
 from .DNMapDetectorHead import DNMapDetectorHead
 from .SQDMapDetectorHead import SQDMapDetectorHead
+from .DN_SQDMapDetectorHead import DNSQDMapDetectorHead

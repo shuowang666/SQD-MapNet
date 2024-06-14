@@ -16,11 +16,12 @@ from ..utils.query_update import MotionMLP
 
 from ..utils.utils import gen_sineembed_for_position, SinePositionalEncoding      
 from ..utils.query_denoising_new import CdnQueryGenerator
+from ..utils.query_denoising_copy import OriginCdnQueryGenerator
 from ..utils.dn_memory_buffer import DNStreamTensorMemory
 import math
 
 @HEADS.register_module(force=True)
-class SQDMapDetectorHead(nn.Module):
+class DNSQDMapDetectorHead(nn.Module):
 
     def __init__(self, 
                  num_queries,
@@ -365,7 +366,7 @@ class SQDMapDetectorHead(nn.Module):
             if self.dn_cfg.get('neg', False) is True:
                 self.dn_generator = PNCdnQueryGenerator(**self.dn_cfg)
             else:
-                self.dn_generator = CdnQueryGenerator(**self.dn_cfg)
+                self.dn_generator = OriginCdnQueryGenerator(**self.dn_cfg)
     
             dn_query_content, input_query_bbox, input_query_pts, attn_mask, dn_meta, denoise_refers \
                             = self.dn_generator(gt_bboxes_list, gt_pts_list, gt_labels_list, self.label_embedding)
@@ -421,6 +422,12 @@ class SQDMapDetectorHead(nn.Module):
                 gt_pts_list.append(cur_gt_vecs_list[i][:, 0, :].reshape(-1, self.num_points, 2))
                 gt_labels_list.append(cur_gt_labels_list_x[i])
                 noise_scale_list.append(torch.ones_like(cur_gt_labels_list_x[i]).type_as(cur_gt_vecs_list[i]))
+            
+            # ＋DN
+            gt_pts_list[i] = torch.cat((gt_pts_list[i], cur_gt_vecs_list[i][:, 0, :].reshape(-1, self.num_points, 2)), 0)
+            gt_labels_list[i] = torch.cat((gt_labels_list[i], cur_gt_labels_list_x[i]), 0)
+            # import pdb; pdb.set_trace()
+            noise_scale_list[i] = torch.cat((noise_scale_list[i], torch.ones_like(cur_gt_labels_list_x[i]).type_as(cur_gt_vecs_list[i])), 0)
 
         gt_bboxes_list = []
         for gt in gt_pts_list:
@@ -796,8 +803,9 @@ class SQDMapDetectorHead(nn.Module):
         #     dn_query, self_attn_mask, dn_meta, denoise_refers \
         #                  = self.denoise(copy.deepcopy(gts[0]['lines']), copy.deepcopy(gts[0]['labels']), bev_features.device)
         #     dn_num = dn_meta['pad_size']
-
+        
         # outs_dec: (num_layers, num_qs, bs, embed_dims)
+
         inter_queries, init_reference, inter_references = self.transformer(
             mlvl_feats=[bev_features,],
             mlvl_masks=[img_masks.type(torch.bool)],
@@ -1337,7 +1345,11 @@ class SQDMapDetectorHead(nn.Module):
                 tmp_lines_list.append(torch.stack(tmp_lines, 0))
             else:
                 tmp_labels_list.append(gts['labels'][i])
-                tmp_lines_list.append(gts['lines'][i])    
+                tmp_lines_list.append(gts['lines'][i])  
+            # import pdb; pdb.set_trace()  
+            # 加DN
+            tmp_labels_list[i] = torch.cat((tmp_labels_list[i], gts['labels'][i]), 0)
+            tmp_lines_list[i] = torch.cat((tmp_lines_list[i], gts['lines'][i]), 0)
         dn_meta['loss_weight'] = torch.cat(dn_meta['loss_weight']).repeat(dn_meta['num_dn_group'])
 
         new_gts['labels'] = tmp_labels_list

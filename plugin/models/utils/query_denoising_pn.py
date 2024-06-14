@@ -13,7 +13,7 @@ def rotate_matrix(theta):
     return np.stack((np.stack((cos, -sin), 1), np.stack((sin, cos), 1)), 1)
 
 
-class CdnQueryGenerator:
+class PNCdnQueryGenerator:
     def __init__(self,
                  hidden_dim=256,
                  num_classes=0,
@@ -27,9 +27,7 @@ class CdnQueryGenerator:
                  pseudo_w=4/30,
                  wh_ratio=20.0,
                  rotate_range=0.0,
-                 froze_class=None,
-                 class_spesific=None,
-                 noise_decay=False,
+                 neg_noise_num=1,
                  **kwargs):
         self.num_queries = num_queries
         self.hidden_dim = hidden_dim
@@ -59,9 +57,7 @@ class CdnQueryGenerator:
         self.pseudo_w = pseudo_w
         self.wh_ratio = wh_ratio
         self.rotate_range = rotate_range
-        self.froze_class = froze_class
-        self.class_spesific = class_spesific
-        self.noise_decay = noise_decay
+        self.neg_noise_num = neg_noise_num
 
     def get_num_groups(self, group_queries=None):
         """
@@ -86,9 +82,7 @@ class CdnQueryGenerator:
                  gt_bboxes,
                  gt_pts,
                  gt_labels=None,
-                 label_enc=None,
-                 prop_query_embedding=None,
-                 noise_scale_list=None):
+                 label_enc=None,):
         """
 
         Args:
@@ -119,19 +113,11 @@ class CdnQueryGenerator:
         loss_weight = []
         neglect_pos = []
 
-        line_pos = []
-        bound_pos = []
-        ped_pos = []
-
-        for label, bboxes, pts in zip(gt_labels, gt_bboxes, gt_pts):
+        # gt_pts_list[1][3]
+        # gt_bboxes[1][3]
+        for bboxes, pts in zip(gt_bboxes, gt_pts):
             # import ipdb; ipdb.set_trace()
-            # TODO 暂时性操作，把特定类别loss设为0
-            if self.froze_class is None:
-                loss_weight.append(1 - ((bboxes[:, 0]==bboxes[:, 2]) | (bboxes[:, 1]==bboxes[:, 3])).long())
-            else:
-                loss_weight.append(1 - ((bboxes[:, 0]==bboxes[:, 2]) | (bboxes[:, 1]==bboxes[:, 3]) | (label!=self.froze_class)).long())  # 只计算某个类别的dn loss
-
-            # loss_weight.append(1 - ((bboxes[:, 0]==bboxes[:, 2]) | (bboxes[:, 1]==bboxes[:, 3])).long())
+            loss_weight.append(1 - ((bboxes[:, 0]==bboxes[:, 2]) | (bboxes[:, 1]==bboxes[:, 3])).long())
             neglect_pos.append(((bboxes[:, 0]==bboxes[:, 2]) | (bboxes[:, 1]==bboxes[:, 3])).nonzero().squeeze(-1))
 
             pts_ = ((pts - bboxes[:, None, :2]) / (bboxes[:, None, 2:] - bboxes[:, None, :2])).clamp(min=0.0, max=1.0)
@@ -147,11 +133,6 @@ class CdnQueryGenerator:
             # factor = bboxes.new_tensor([self.bev_w, self.bev_h, self.bev_w, self.bev_h]).unsqueeze(0)
             # bboxes_normalized = bbox_xyxy_to_cxcywh(bboxes) / factor
             gt_bboxes_list.append(bboxes_normalized)
-
-            # 把divider line的位置保存下来
-            line_pos.append((label == 1).long())
-            ped_pos.append((label == 0).long())
-            bound_pos.append((label == 2).long())
 
         known = [torch.ones(b.shape[0]).int() for b in gt_bboxes]
         known_num = [sum(k) for k in known]
@@ -175,25 +156,22 @@ class CdnQueryGenerator:
         known_indice = torch.nonzero(unmask_label + unmask_bbox)
         known_indice = known_indice.view(-1)
 
-        known_indice = known_indice.repeat(num_groups, 1).view(-1)
-        known_labels = labels.repeat(num_groups, 1).view(-1)
-        known_bid = batch_idx.repeat(num_groups, 1).view(-1)
-        known_bboxs = boxes.repeat(num_groups, 1)
-        known_pts = pt.repeat(num_groups, 1, 1)
+        known_indice = known_indice.repeat(2 * num_groups, 1).view(-1)
+        known_labels = labels.repeat(2 * num_groups, 1).view(-1)
+        known_bid = batch_idx.repeat(2 * num_groups, 1).view(-1)
+        known_bboxs = boxes.repeat(2 * num_groups, 1)
+        known_pts = pt.repeat(2 * num_groups, 1, 1)
         # known_refers = refers.repeat(num_groups, 1, 1)
         known_labels_expand = known_labels.clone()
         known_bbox_expand = known_bboxs.clone()
-        # loss_weight = torch.cat(loss_weight).repeat(num_groups)
+        loss_weight = torch.cat(loss_weight).repeat(2 * num_groups)
 
-        if noise_scale_list is not None:
-            noise_scale_list = torch.cat(noise_scale_list).repeat(num_groups)
-
-        # 保存divider line的位置
-        if self.class_spesific is not None:
-            line_pos = torch.cat(line_pos).repeat(num_groups)
-            ped_pos = torch.cat(ped_pos).repeat(num_groups)
-            bound_pos = torch.cat(bound_pos).repeat(num_groups)
-
+        if self.label_noise_scale > 0:
+            p = torch.rand_like(known_labels_expand.float())
+            chosen_indice = torch.nonzero(
+                p < (self.label_noise_scale * 0.5)).view(-1)
+            new_label = torch.randint_like(chosen_indice, 0, self.num_classes)
+            known_labels_expand.scatter_(0, chosen_indice, new_label)
         single_pad = int(max(known_num))  # TODO
 
         # plot时新加，不plot时注释掉
@@ -203,7 +181,12 @@ class CdnQueryGenerator:
         #     known_pts_ = known_pts_.clamp(min=0.0, max=1.0)
 
         # pad_size应该表示pos/neg应该pad的数目
-        pad_size = int(single_pad * num_groups)
+        pad_size = int(2 * single_pad * num_groups)
+        positive_idx = torch.tensor(range(len(boxes))).long().to(device).unsqueeze(0).repeat(num_groups, 1)
+        positive_idx += (torch.tensor(range(num_groups)) * len(boxes) * 2).long().to(device).unsqueeze(1)
+        positive_idx = positive_idx.flatten()
+        negative_idx = positive_idx + len(boxes)
+
         if self.box_noise_scale > 0:
             known_bbox_ = torch.zeros_like(known_bboxs)
             # 又变回x, y, x, y形式
@@ -220,21 +203,12 @@ class CdnQueryGenerator:
                 known_bboxs, low=0, high=2, dtype=torch.float32)
             rand_sign = rand_sign * 2.0 - 1.0
             rand_part = torch.rand_like(known_bboxs)
+            rand_part[negative_idx] += 1.0
             rand_part *= rand_sign
             add = torch.mul(rand_sign, diff).to(device)
 
-            if self.class_spesific:
-                # import ipdb; ipdb.set_trace()
-                noise = torch.mul(rand_part, diff).to(device)
-                known_bbox_ += (noise*line_pos[:, None]*self.class_spesific[1] + noise*ped_pos[:, None]*self.class_spesific[0] + \
-                                noise*bound_pos[:, None]*self.class_spesific[2])
             # 原始不加筛选
-            else:
-                if self.noise_decay:
-                    # import ipdb; ipdb.set_trace()
-                    known_bbox_ += torch.mul(rand_part, diff).to(device) * self.box_noise_scale * noise_scale_list[:, None]
-                else:
-                    known_bbox_ += torch.mul(rand_part, diff).to(device) * self.box_noise_scale
+            known_bbox_ += torch.mul(rand_part, diff).to(device) * self.box_noise_scale
             known_bbox_ = known_bbox_.clamp(min=0.0, max=1.0)
 
             # 这里面是具体筛选代码
@@ -330,11 +304,7 @@ class CdnQueryGenerator:
                 known_bboxs[:, : 2] - known_bboxs[:, 2:] / 2
             known_bbox_[:, 2:] = \
                 known_bboxs[:, :2] + known_bboxs[:, 2:] / 2
-        
-        # 单独对divider line进行加噪：整体上下左右平移
-        # if self.class_spesific:
-        #     import ipdb; ipdb.set_trace()
-
+            
         if self.pt_noise_scale > 0:
             rand_sign = (torch.rand_like(known_pts) * 2.0 - 1.0) / 20
             known_pts += rand_sign.to(device) * self.pt_noise_scale
@@ -374,38 +344,6 @@ class CdnQueryGenerator:
         # 鸡生蛋，蛋生鸡gt
         # known_refers = known_bbox_[:, None, :2] + known_pts * known_bbox_expand[:, None, 2:]
 
-        # 可视化
-        # import matplotlib.pyplot as plt
-        # import numpy as np
-        # from PIL import Image, ImageDraw
-        # import os
-
-        # colors_plt = ['orange', 'b', 'g']
-        # plt.figure(figsize=(2, 4))
-        # plt.xlim(-15.5, 15.5)
-        # plt.ylim(-30.5, 30.5)
-        # plt.axis('off')
-        # import ipdb; ipdb.set_trace()
-        # for k in range(len(prev_lines[i])):
-        #     pts = prev_lines[i][k][0].reshape(-1, 2).cpu().numpy()
-        #     pts = pts * np.array([60, 30]) - np.array([30, 15])
-            
-        #     x = pts[:, 1]
-        #     y = pts[:, 0]
-
-        #     plt.plot(x, y, color=colors_plt[prev_labels[i][k].item()],linewidth=1,alpha=0.8,zorder=-1)
-        #     plt.scatter(x, y, color=colors_plt[prev_labels[i][k].item()],s=2,alpha=0.8,zorder=-1)
-
-        # gt_fixedpts_map_path = os.path.join('/data/code/StreamMapNet/vis', str(self.iter)+'_'+str(vis_idx)+'_prev_gt'+'.png')
-        # plt.savefig(gt_fixedpts_map_path, bbox_inches='tight', format='png',dpi=1200)
-        # plt.close()   
-
-        if self.label_noise_scale > 0:
-            p = torch.rand_like(known_labels_expand.float())
-            chosen_indice = torch.nonzero(
-                p < (self.label_noise_scale * 0.5)).view(-1)
-            new_label = torch.randint_like(chosen_indice, 0, self.num_classes)
-            known_labels_expand.scatter_(0, chosen_indice, new_label)
 
         # TODO 这里没有取 inverse_sigmoid
         m = known_labels_expand.long().to(device)
@@ -414,7 +352,7 @@ class CdnQueryGenerator:
         input_bbox_embed = known_bbox_expand
         padding_label = torch.zeros(pad_size, self.hidden_dim).to(device)
         padding_bbox = torch.zeros(pad_size, 4).to(device)
-        padding_pts = torch.zeros(pad_size, self.num_pts_per_vec, 2).to(device)
+        padding_pts = torch.zeros(pad_size, 20, 2).to(device)
         input_query_label = padding_label.repeat(batch_size, 1, 1)
         input_query_bbox = padding_bbox.repeat(batch_size, 1, 1)
         input_query_pts = padding_pts.repeat(batch_size, 1, 1, 1)
@@ -430,7 +368,7 @@ class CdnQueryGenerator:
             map_known_indice = torch.cat([torch.tensor(range(num)) for num in known_num])
             map_known_indice = torch.cat([
                 map_known_indice + single_pad * i
-                for i in range(num_groups)
+                for i in range(2*num_groups)
             ]).long()
         if len(known_bid):
             input_query_label[(known_bid.long(),
@@ -442,26 +380,23 @@ class CdnQueryGenerator:
             denoise_refers[(known_bid.long(),
                               map_known_indice)] = known_refers
 
-        if prop_query_embedding is not None:
-            tgt_size = pad_size + self.num_queries + prop_query_embedding.size(1)
-        else:
-            tgt_size = pad_size + self.num_queries
+        tgt_size = pad_size + self.num_queries
         attn_mask = torch.ones(tgt_size, tgt_size).to(device) < 0
         # match query cannot see the reconstruct
         attn_mask[pad_size:, :pad_size] = True
         # reconstruct cannot see each other
         for i in range(num_groups):
             if i == 0:
-                attn_mask[single_pad * i:single_pad * (i + 1),
-                          single_pad * (i + 1):pad_size] = True
+                attn_mask[single_pad * 2 * i:single_pad * 2 * (i + 1),
+                          single_pad * 2 * (i + 1):pad_size] = True
             if i == num_groups - 1:
-                attn_mask[single_pad * i:single_pad *
-                          (i + 1), :single_pad * i] = True
+                attn_mask[single_pad * 2 * i:single_pad * 2 *
+                          (i + 1), :single_pad * 2 * i] = True
             else:
-                attn_mask[single_pad * i:single_pad * (i + 1),
-                          single_pad * (i + 1):pad_size] = True
-                attn_mask[single_pad * i:single_pad *
-                          (i + 1), :single_pad * i] = True
+                attn_mask[single_pad * 2 * i:single_pad * 2 * (i + 1),
+                          single_pad * 2 * (i + 1):pad_size] = True
+                attn_mask[single_pad * 2 * i:single_pad * 2 *
+                          (i + 1), :single_pad * 2 * i] = True
 
         # 设置斜对角线，而非gt point的相对位置
         # input_query_pts = torch.cat((torch.linspace(0, 1, 20).unsqueeze(-1), torch.linspace(0, 1, 20).unsqueeze(-1)), -1).unsqueeze(0).repeat(batch_size, input_query_bbox.size(1), 1, 1).to(device)
@@ -477,12 +412,13 @@ class CdnQueryGenerator:
         # if (loss_weight==0).sum() != 0:
         #     import ipdb; ipdb.set_trace()
 
-        # 去掉完全的直线，分母为0
+        # TODO
         for i, pos in enumerate(neglect_pos):
             if len(pos) != 0:
-                for j in range(num_groups):
+                for j in range(2*num_groups):
                     denoise_refers[i][pos+single_pad * j] = gt_pts[i][pos]
 
         # import ipdb; ipdb.set_trace()
-
+        if torch.isnan(denoise_refers).any():
+            import pdb; pdb.set_trace()
         return input_query_label, input_query_bbox, input_query_pts, attn_mask, dn_meta, denoise_refers

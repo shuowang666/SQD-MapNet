@@ -1,5 +1,5 @@
 _base_ = [
-    './_base_/default_runtime.py'
+    '../_base_/default_runtime.py'
 ]
 
 # model type
@@ -23,8 +23,8 @@ num_iters_per_epoch = 27846 // (num_gpus * batch_size)
 # num_gpus = 1
 # batch_size = 2
 # num_iters_per_epoch = 27846 // (num_gpus * batch_size)
-num_epochs = 30
-num_epochs_single_frame = 4
+num_epochs = 24
+num_epochs_single_frame = num_epochs // 6
 total_iters = num_iters_per_epoch * num_epochs
 
 num_queries = 100
@@ -68,7 +68,7 @@ num_points = 20
 permute = True
 
 model = dict(
-    type='StreamMapNet',
+    type='SQDMapNet',
     roi_size=roi_size,
     bev_h=bev_h,
     bev_w=bev_w,
@@ -90,8 +90,8 @@ model = dict(
             norm_cfg=norm_cfg,
             norm_eval=True,
             style='caffe',
-            dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False),
-            stage_with_dcn=(False, False, True, True),
+            # dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False),
+            # stage_with_dcn=(False, False, True, True),
             ),
         img_neck=dict(
             type='FPN',
@@ -144,8 +144,6 @@ model = dict(
     ),
     head_cfg=dict(
         type='DNMapDetectorHead',
-        # dn_iter=num_epochs_single_frame*num_iters_per_epoch,
-        dn_iter=0,
         num_queries=num_queries,
         embed_dims=embed_dims,
         num_classes=num_class,
@@ -160,13 +158,14 @@ model = dict(
             hidden_dim=embed_dims//2,
             num_queries=num_queries,
             num_classes=num_class,
-            noise_scale=dict(label=0.5, box=0.4, pt=0.0),  # 0.5, 0.4 for DN-DETR
-            group_cfg=dict(dynamic=True, num_groups=None, num_dn_queries=40),
+            noise_scale=dict(label=0.5, box=0.6, pt=0.0),  # 0.5, 0.4 for DN-DETR
+            group_cfg=dict(dynamic=True, num_groups=None, num_dn_queries=30),
             bev_h=bev_h, bev_w=bev_w,
             pc_range=pc_range,
             voxel_size=[0.1, 0.1],
             num_pts_per_vec=num_points,
-            rotate_range=0.0,),
+            rotate_range=0.0,
+            neg=True),
         streaming_cfg=dict(
             streaming=True,
             batch_size=batch_size,
@@ -257,7 +256,14 @@ model = dict(
                     ),
                 ),
         ),
-    streaming_cfg=dict(),
+    streaming_cfg=dict(
+        streaming_bev=True,
+        batch_size=batch_size,
+        fusion_cfg=dict(
+            type='ConvGRU',
+            out_channels=bev_embed_dims,
+        )
+    ),
     model_name='SingleStage'
 )
 
@@ -389,9 +395,9 @@ lr_config = dict(
     warmup_ratio=1.0 / 3,
     min_lr_ratio=3e-3)
 
-evaluation = dict(interval=num_epochs//6*num_iters_per_epoch)
+evaluation = dict(interval=num_epochs_single_frame*num_iters_per_epoch)
 find_unused_parameters = True #### when use checkpoint, find_unused_parameters must be False
-checkpoint_config = dict(interval=num_epochs//6*num_iters_per_epoch, max_keep_ckpts=1)
+checkpoint_config = dict(interval=num_epochs_single_frame*num_iters_per_epoch, max_keep_ckpts=1)
 
 runner = dict(
     type='IterBasedRunner', max_iters=num_epochs * num_iters_per_epoch)
@@ -403,4 +409,4 @@ log_config = dict(
         dict(type='TensorboardLoggerHook')
     ])
 
-SyncBN = True
+SyncBN = False

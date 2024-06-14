@@ -16,6 +16,7 @@ from ..utils.query_update import MotionMLP
 
 from ..utils.utils import gen_sineembed_for_position, SinePositionalEncoding      
 from ..utils.query_denoising import CdnQueryGenerator
+from ..utils.query_denoising_pn import PNCdnQueryGenerator
 
 @HEADS.register_module(force=True)
 class DNMapDetectorHead(nn.Module):
@@ -889,25 +890,44 @@ class DNMapDetectorHead(nn.Module):
                     a single decoder layer.
         """
         group = dn_meta['num_dn_group']
-        gt_labels_list = [label for label in gts['labels']]
-        cls_labels = torch.cat(gt_labels_list, dim=0).repeat(group) # (bs*num_q, )
-        # cls_weights = torch.ones_like(cls_labels) # (bs*num_q, )
-        cls_weights = dn_meta['loss_weight']
 
-        gt_pts_list = [gt_line[:, 0, :] for gt_line in gts['lines']]
-        gt_lines = torch.cat(gt_pts_list, 0).repeat(group, 1)
-        # line_weights = torch.ones_like(gt_lines)
-        line_weights = dn_meta['loss_weight'][:, None].repeat(1, gt_lines.size(1))
+        if self.dn_cfg is not None and self.dn_cfg.get('neg', False) is True:
+            gt_labels_list = [label for label in gts['labels']]
+            cls_labels = torch.cat(gt_labels_list, dim=0)
+            cls_labels = torch.cat((cls_labels, torch.full_like(cls_labels, 3))).repeat(group) 
+            cls_weights = dn_meta['loss_weight']
 
-        # construct weighted avg_factor to match with the official DETR repo
-        num_total_pos = cls_labels.size(0)
-        cls_avg_factor = num_total_pos * 1.0
+            gt_pts_list = [gt_line[:, 0, :] for gt_line in gts['lines']]
+            gt_lines = torch.cat(gt_pts_list, 0)
+
+            line_weights_tmp = dn_meta['loss_weight'][:gt_lines.size(0)]
+            line_weights = torch.cat((line_weights_tmp, torch.zeros_like(line_weights_tmp)))[:, None].repeat(group, gt_lines.size(1))
+            gt_lines = gt_lines.repeat(2*group, 1)  
+            # import pdb; pdb.set_trace()
+
+            # construct weighted avg_factor to match with the official DETR repo
+            num_total_pos = cls_labels.size(0) // 2
+            cls_avg_factor = num_total_pos * 1.0
+        else:
+            gt_labels_list = [label for label in gts['labels']]
+            cls_labels = torch.cat(gt_labels_list, dim=0).repeat(group) # (bs*num_q, )
+            # cls_weights = torch.ones_like(cls_labels) # (bs*num_q, )
+            cls_weights = dn_meta['loss_weight']
+
+            gt_pts_list = [gt_line[:, 0, :] for gt_line in gts['lines']]
+            gt_lines = torch.cat(gt_pts_list, 0).repeat(group, 1)
+            # line_weights = torch.ones_like(gt_lines)
+            line_weights = dn_meta['loss_weight'][:, None].repeat(1, gt_lines.size(1))
+
+            # construct weighted avg_factor to match with the official DETR repo
+            num_total_pos = cls_labels.size(0)
+            cls_avg_factor = num_total_pos * 1.0
         
         if self.sync_cls_avg_factor:
             cls_avg_factor = reduce_mean(
                 preds['scores'][0].new_tensor([cls_avg_factor]))
         cls_avg_factor = max(cls_avg_factor, 1)
-
+ 
         # Classification loss
         pred_scores = torch.stack(preds['scores'], dim=0) # (bs*num_q, cls_out_channles)
         cls_scores = pred_scores[(dn_meta['known_bid'].long(), dn_meta['map_known_indice'].long())] # (bs*num_q, cls_out_channels)

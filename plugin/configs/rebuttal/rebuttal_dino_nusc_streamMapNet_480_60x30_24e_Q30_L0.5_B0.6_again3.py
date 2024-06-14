@@ -1,5 +1,5 @@
 _base_ = [
-    './_base_/default_runtime.py'
+    '../_base_/default_runtime.py'
 ]
 
 # model type
@@ -68,7 +68,7 @@ num_points = 20
 permute = True
 
 model = dict(
-    type='StreamMapNet',
+    type='SQDMapNet',
     roi_size=roi_size,
     bev_h=bev_h,
     bev_w=bev_w,
@@ -159,12 +159,13 @@ model = dict(
             num_queries=num_queries,
             num_classes=num_class,
             noise_scale=dict(label=0.5, box=0.6, pt=0.0),  # 0.5, 0.4 for DN-DETR
-            group_cfg=dict(dynamic=True, num_groups=None, num_dn_queries=60),
+            group_cfg=dict(dynamic=True, num_groups=None, num_dn_queries=30),
             bev_h=bev_h, bev_w=bev_w,
             pc_range=pc_range,
             voxel_size=[0.1, 0.1],
             num_pts_per_vec=num_points,
-            rotate_range=0.0,),
+            rotate_range=0.0,
+            neg=True),
         streaming_cfg=dict(
             streaming=True,
             batch_size=batch_size,

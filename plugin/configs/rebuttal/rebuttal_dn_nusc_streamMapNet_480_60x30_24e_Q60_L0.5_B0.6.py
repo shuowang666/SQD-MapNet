@@ -1,5 +1,5 @@
 _base_ = [
-    './_base_/default_runtime.py'
+    '../_base_/default_runtime.py'
 ]
 
 # model type
@@ -68,7 +68,7 @@ num_points = 20
 permute = True
 
 model = dict(
-    type='StreamMapNet',
+    type='SQDMapNet',
     roi_size=roi_size,
     bev_h=bev_h,
     bev_w=bev_w,
@@ -86,7 +86,7 @@ model = dict(
             depth=50,
             num_stages=4,
             out_indices=(1, 2, 3),
-            frozen_stages=1,
+            frozen_stages=-1,
             norm_cfg=norm_cfg,
             norm_eval=True,
             style='caffe',
@@ -143,7 +143,7 @@ model = dict(
             ),
     ),
     head_cfg=dict(
-        type='MapDetectorHead',
+        type='DNMapDetectorHead',
         num_queries=num_queries,
         embed_dims=embed_dims,
         num_classes=num_class,
@@ -154,6 +154,17 @@ model = dict(
         different_heads=False,
         predict_refine=False,
         sync_cls_avg_factor=True,
+        dn_cfg=dict(  # CdnQueryGenerator
+            hidden_dim=embed_dims//2,
+            num_queries=num_queries,
+            num_classes=num_class,
+            noise_scale=dict(label=0.5, box=0.6, pt=0.0),  # 0.5, 0.4 for DN-DETR
+            group_cfg=dict(dynamic=True, num_groups=None, num_dn_queries=60),
+            bev_h=bev_h, bev_w=bev_w,
+            pc_range=pc_range,
+            voxel_size=[0.1, 0.1],
+            num_pts_per_vec=num_points,
+            rotate_range=0.0,),
         streaming_cfg=dict(
             streaming=True,
             batch_size=batch_size,
@@ -171,6 +182,7 @@ model = dict(
             ),
             decoder=dict(
                 type='MapTransformerDecoder_new',
+                dn_query=num_queries,
                 num_layers=6,
                 prop_add_stage=1,
                 return_intermediate=True,
@@ -222,6 +234,18 @@ model = dict(
             loss_weight=50.0,
             beta=0.01,
         ),
+        loss_dn_cls=dict(
+            type='FocalLoss',
+            use_sigmoid=True,
+            gamma=2.0,
+            alpha=0.25,
+            loss_weight=4.0
+        ),
+        loss_dn_reg=dict(
+            type='LinesL1Loss',
+            loss_weight=50.0,
+            beta=0.01,
+        ),
         assigner=dict(
             type='HungarianLinesAssigner',
                 cost=dict(
@@ -231,7 +255,14 @@ model = dict(
                     ),
                 ),
         ),
-    streaming_cfg=dict(),
+    streaming_cfg=dict(
+        streaming_bev=True,
+        batch_size=batch_size,
+        fusion_cfg=dict(
+            type='ConvGRU',
+            out_channels=bev_embed_dims,
+        )
+    ),
     model_name='SingleStage'
 )
 

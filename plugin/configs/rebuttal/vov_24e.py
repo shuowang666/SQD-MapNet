@@ -1,6 +1,8 @@
 _base_ = [
-    './_base_/default_runtime.py'
+    '../_base_/default_runtime.py'
 ]
+
+# 把上一帧gt转到当前帧后再做DN
 
 # model type
 type = 'Mapper'
@@ -11,14 +13,14 @@ plugin_dir = 'plugin/'
 
 # img configs
 img_norm_cfg = dict(
-    mean=[103.530, 116.280, 123.675], std=[1.0, 1.0, 1.0], to_rgb=False)
+    mean=[103.530, 116.280, 123.675], std=[57.375, 57.120, 58.395], to_rgb=False)
 
-img_h = 480
-img_w = 800
+img_h = 928
+img_w = 1600
 img_size = (img_h, img_w)
 
 num_gpus = 8
-batch_size = 4
+batch_size = 2
 num_iters_per_epoch = 27846 // (num_gpus * batch_size)
 # num_gpus = 1
 # batch_size = 2
@@ -61,14 +63,14 @@ meta = dict(
 # model configs
 bev_embed_dims = 256
 embed_dims = 512
-num_feat_levels = 3
+num_feat_levels = 2
 norm_cfg = dict(type='BN2d')
 num_class = max(list(cat2id.values()))+1
 num_points = 20
 permute = True
 
 model = dict(
-    type='StreamMapNet',
+    type='SQDMapNet',
     roi_size=roi_size,
     bev_h=bev_h,
     bev_w=bev_w,
@@ -79,29 +81,26 @@ model = dict(
         bev_w=bev_w,
         use_grid_mask=True,
         img_backbone=dict(
-            type='ResNet',
-            with_cp=False,
-            # pretrained='./resnet50_checkpoint.pth',
-            pretrained='open-mmlab://detectron2/resnet50_caffe',
-            depth=50,
-            num_stages=4,
-            out_indices=(1, 2, 3),
-            frozen_stages=-1,
-            norm_cfg=norm_cfg,
+            type='VoVNetCP', ###use checkpoint to save memory
+            spec_name='V-99-eSE',
             norm_eval=True,
-            style='caffe',
-            # dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False),
-            # stage_with_dcn=(False, False, True, True),
-            ),
+            frozen_stages=-1,
+            input_ch=3,
+            out_features=('stage4','stage5',)),
         img_neck=dict(
-            type='FPN',
-            in_channels=[512, 1024, 2048],
+            type='CPFPN',  ###remove unused parameters 
+            in_channels=[768, 1024],
             out_channels=bev_embed_dims,
-            start_level=0,
-            add_extra_convs=True,
-            num_outs=num_feat_levels,
-            norm_cfg=norm_cfg,
-            relu_before_extra_convs=True),
+            num_outs=num_feat_levels),
+        # img_neck=dict(
+        #     type='FPN',
+        #     in_channels=[512, 1024, 2048],
+        #     out_channels=bev_embed_dims,
+        #     start_level=0,
+        #     add_extra_convs=True,
+        #     num_outs=num_feat_levels,
+        #     norm_cfg=norm_cfg,
+        #     relu_before_extra_convs=True),
         transformer=dict(
             type='PerceptionTransformer',
             embed_dims=bev_embed_dims,
@@ -143,7 +142,11 @@ model = dict(
             ),
     ),
     head_cfg=dict(
-        type='MapDetectorHead',
+        type='SQDMapDetectorHead',
+        dn_iter=0,
+        # dn_iter=num_epochs_single_frame*num_iters_per_epoch,
+        tolerant_noise=0.1,
+        noise_decay_scale=[0.2, 0.2, 0.2],
         num_queries=num_queries,
         embed_dims=embed_dims,
         num_classes=num_class,
@@ -154,7 +157,24 @@ model = dict(
         different_heads=False,
         predict_refine=False,
         sync_cls_avg_factor=True,
-        streaming_cfg=None,
+        dn_cfg=dict(  # CdnQueryGenerator
+            hidden_dim=embed_dims//2,
+            num_queries=num_queries,
+            num_classes=num_class,
+            noise_scale=dict(label=0.5, box=0.6, pt=0.0),  # 0.5, 0.4 for DN-DETR
+            group_cfg=dict(dynamic=True, num_groups=1, num_dn_queries=60),
+            bev_h=bev_h, bev_w=bev_w,
+            pc_range=pc_range,
+            voxel_size=[0.1, 0.1],
+            num_pts_per_vec=num_points,
+            rotate_range=0.0,
+            noise_decay=True),
+        streaming_cfg=dict(
+            streaming=True,
+            batch_size=batch_size,
+            topk=int(num_queries*(1/3)),
+            trans_loss_weight=0.1,
+        ),
         transformer=dict(
             type='MapTransformer',
             num_feature_levels=1,
@@ -166,6 +186,7 @@ model = dict(
             ),
             decoder=dict(
                 type='MapTransformerDecoder_new',
+                dn_query=num_queries,
                 num_layers=6,
                 prop_add_stage=1,
                 return_intermediate=True,
@@ -217,6 +238,18 @@ model = dict(
             loss_weight=50.0,
             beta=0.01,
         ),
+        loss_dn_cls=dict(
+            type='FocalLoss',
+            use_sigmoid=True,
+            gamma=2.0,
+            alpha=0.25,
+            loss_weight=4.0
+        ),
+        loss_dn_reg=dict(
+            type='LinesL1Loss',
+            loss_weight=50.0,
+            beta=0.01,
+        ),
         assigner=dict(
             type='HungarianLinesAssigner',
                 cost=dict(
@@ -248,6 +281,7 @@ train_pipeline = [
         permute=permute,
     ),
     dict(type='LoadMultiViewImagesFromFiles', to_float32=True),
+    # dict(type='LoadIDFromFiles', root='./datasets/nuScenes/vectors', normalize=True, roi_size=roi_size),
     dict(type='PhotoMetricDistortionMultiViewImage'),
     dict(type='ResizeMultiViewImages',
          size=img_size, # H, W
@@ -302,7 +336,7 @@ eval_config = dict(
 # dataset configs
 data = dict(
     samples_per_gpu=batch_size,
-    workers_per_gpu=4,
+    workers_per_gpu=2,
     train=dict(
         type='NuscDataset',
         data_root='./datasets/nuScenes',
@@ -335,11 +369,12 @@ data = dict(
         pipeline=test_pipeline,
         eval_config=eval_config,
         test_mode=True,
-        seq_split_num=1,
+        seq_split_num=-1,
     ),
     shuffler_sampler=dict(
         type='InfiniteGroupEachSampleInBatchSampler',
         seq_split_num=2,
+        # num_iters_to_seq=0,
         num_iters_to_seq=num_epochs_single_frame*num_iters_per_epoch,
         random_drop=0.0
     ),
@@ -365,9 +400,9 @@ lr_config = dict(
     warmup_ratio=1.0 / 3,
     min_lr_ratio=3e-3)
 
-evaluation = dict(interval=num_epochs//6*num_iters_per_epoch)
+evaluation = dict(interval=num_epochs_single_frame*num_iters_per_epoch)
 find_unused_parameters = True #### when use checkpoint, find_unused_parameters must be False
-checkpoint_config = dict(interval=num_epochs//6*num_iters_per_epoch, max_keep_ckpts=1)
+checkpoint_config = dict(interval=num_epochs_single_frame*num_iters_per_epoch, max_keep_ckpts=1)
 
 runner = dict(
     type='IterBasedRunner', max_iters=num_epochs * num_iters_per_epoch)
@@ -380,4 +415,5 @@ log_config = dict(
     ])
 
 SyncBN = False
-# resume_from = '/data/code/StreamMapNet/work_dirs/nusc_baseline_480_60x30_24e/iter_17400.pth'
+# resume_from = "work_dirs/streamDN_convertCur_new_nusc_480_60x30_24e_Group1_L0.0_B0.0/iter_3480.pth"
+load_from='ckpts/fcos3d_vovnet_imgbackbone-remapped_convert.pth'

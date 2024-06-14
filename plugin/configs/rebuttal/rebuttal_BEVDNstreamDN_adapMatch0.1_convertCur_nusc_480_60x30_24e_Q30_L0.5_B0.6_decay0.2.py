@@ -1,6 +1,8 @@
 _base_ = [
-    './_base_/default_runtime.py'
+    '../_base_/default_runtime.py'
 ]
+
+# 把上一帧gt转到当前帧后再做DN
 
 # model type
 type = 'Mapper'
@@ -23,7 +25,8 @@ num_iters_per_epoch = 27846 // (num_gpus * batch_size)
 # num_gpus = 1
 # batch_size = 2
 # num_iters_per_epoch = 27846 // (num_gpus * batch_size)
-num_epochs = 30
+num_epochs = 24
+num_epochs_single_frame = num_epochs // 6
 total_iters = num_iters_per_epoch * num_epochs
 
 num_queries = 100
@@ -67,7 +70,7 @@ num_points = 20
 permute = True
 
 model = dict(
-    type='StreamMapNet',
+    type='SQDMapNet',
     roi_size=roi_size,
     bev_h=bev_h,
     bev_w=bev_w,
@@ -89,8 +92,8 @@ model = dict(
             norm_cfg=norm_cfg,
             norm_eval=True,
             style='caffe',
-            dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False),
-            stage_with_dcn=(False, False, True, True),
+            # dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False),
+            # stage_with_dcn=(False, False, True, True),
             ),
         img_neck=dict(
             type='FPN',
@@ -142,7 +145,11 @@ model = dict(
             ),
     ),
     head_cfg=dict(
-        type='MapDetectorHead',
+        type='DNSQDMapDetectorHead',
+        dn_iter=0,
+        # dn_iter=num_epochs_single_frame*num_iters_per_epoch,
+        tolerant_noise=0.1,
+        noise_decay_scale=[0.2, 0.2, 0.2],
         num_queries=num_queries,
         embed_dims=embed_dims,
         num_classes=num_class,
@@ -153,7 +160,24 @@ model = dict(
         different_heads=False,
         predict_refine=False,
         sync_cls_avg_factor=True,
-        streaming_cfg=dict(),
+        dn_cfg=dict(  # CdnQueryGenerator
+            hidden_dim=embed_dims//2,
+            num_queries=num_queries,
+            num_classes=num_class,
+            noise_scale=dict(label=0.5, box=0.6, pt=0.0),  # 0.5, 0.4 for DN-DETR
+            group_cfg=dict(dynamic=True, num_groups=1, num_dn_queries=30),
+            bev_h=bev_h, bev_w=bev_w,
+            pc_range=pc_range,
+            voxel_size=[0.1, 0.1],
+            num_pts_per_vec=num_points,
+            rotate_range=0.0,
+            noise_decay=True),
+        streaming_cfg=dict(
+            streaming=True,
+            batch_size=batch_size,
+            topk=int(num_queries*(1/3)),
+            trans_loss_weight=0.1,
+        ),
         transformer=dict(
             type='MapTransformer',
             num_feature_levels=1,
@@ -165,7 +189,9 @@ model = dict(
             ),
             decoder=dict(
                 type='MapTransformerDecoder_new',
+                dn_query=num_queries,
                 num_layers=6,
+                prop_add_stage=1,
                 return_intermediate=True,
                 transformerlayers=dict(
                     type='MapTransformerLayer',
@@ -215,6 +241,18 @@ model = dict(
             loss_weight=50.0,
             beta=0.01,
         ),
+        loss_dn_cls=dict(
+            type='FocalLoss',
+            use_sigmoid=True,
+            gamma=2.0,
+            alpha=0.25,
+            loss_weight=4.0
+        ),
+        loss_dn_reg=dict(
+            type='LinesL1Loss',
+            loss_weight=50.0,
+            beta=0.01,
+        ),
         assigner=dict(
             type='HungarianLinesAssigner',
                 cost=dict(
@@ -224,7 +262,14 @@ model = dict(
                     ),
                 ),
         ),
-    streaming_cfg=dict(),
+    streaming_cfg=dict(
+        streaming_bev=True,
+        batch_size=batch_size,
+        fusion_cfg=dict(
+            type='ConvGRU',
+            out_channels=bev_embed_dims,
+        )
+    ),
     model_name='SingleStage'
 )
 
@@ -239,6 +284,7 @@ train_pipeline = [
         permute=permute,
     ),
     dict(type='LoadMultiViewImagesFromFiles', to_float32=True),
+    # dict(type='LoadIDFromFiles', root='./datasets/nuScenes/vectors', normalize=True, roi_size=roi_size),
     dict(type='PhotoMetricDistortionMultiViewImage'),
     dict(type='ResizeMultiViewImages',
          size=img_size, # H, W
@@ -293,7 +339,7 @@ eval_config = dict(
 # dataset configs
 data = dict(
     samples_per_gpu=batch_size,
-    workers_per_gpu=2,
+    workers_per_gpu=4,
     train=dict(
         type='NuscDataset',
         data_root='./datasets/nuScenes',
@@ -302,7 +348,7 @@ data = dict(
         roi_size=roi_size,
         cat2id=cat2id,
         pipeline=train_pipeline,
-        seq_split_num=-1,
+        seq_split_num=1,
     ),
     val=dict(
         type='NuscDataset',
@@ -314,7 +360,7 @@ data = dict(
         pipeline=test_pipeline,
         eval_config=eval_config,
         test_mode=True,
-        seq_split_num=-1,
+        seq_split_num=1,
     ),
     test=dict(
         type='NuscDataset',
@@ -326,10 +372,14 @@ data = dict(
         pipeline=test_pipeline,
         eval_config=eval_config,
         test_mode=True,
-        seq_split_num=-1,
+        seq_split_num=1,
     ),
     shuffler_sampler=dict(
         type='InfiniteGroupEachSampleInBatchSampler',
+        seq_split_num=2,
+        # num_iters_to_seq=0,
+        num_iters_to_seq=num_epochs_single_frame*num_iters_per_epoch,
+        random_drop=0.0
     ),
     nonshuffler_sampler=dict(type='DistributedSampler')
 )
@@ -353,9 +403,9 @@ lr_config = dict(
     warmup_ratio=1.0 / 3,
     min_lr_ratio=3e-3)
 
-evaluation = dict(interval=num_epochs//6*num_iters_per_epoch)
+evaluation = dict(interval=num_epochs_single_frame*num_iters_per_epoch)
 find_unused_parameters = True #### when use checkpoint, find_unused_parameters must be False
-checkpoint_config = dict(interval=num_epochs//6*num_iters_per_epoch)
+checkpoint_config = dict(interval=num_epochs_single_frame*num_iters_per_epoch, max_keep_ckpts=1)
 
 runner = dict(
     type='IterBasedRunner', max_iters=num_epochs * num_iters_per_epoch)
@@ -367,4 +417,5 @@ log_config = dict(
         dict(type='TensorboardLoggerHook')
     ])
 
-SyncBN = True
+SyncBN = False
+# resume_from = "work_dirs/streamDN_convertCur_new_nusc_480_60x30_24e_Group1_L0.0_B0.0/iter_3480.pth"
