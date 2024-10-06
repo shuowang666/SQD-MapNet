@@ -24,8 +24,6 @@ class CdnQueryGenerator:
                  pc_range=[-15.0, -30.0, -2.0, 15.0, 30.0, 2.0],
                  voxel_size=[0.3, 0.3],
                  num_pts_per_vec=20,
-                 pseudo_w=4/30,
-                 wh_ratio=20.0,
                  rotate_range=0.0,
                  froze_class=None,
                  class_spesific=None,
@@ -56,8 +54,6 @@ class CdnQueryGenerator:
         self.bev_w = bev_w
         self.voxel_size = voxel_size
         self.num_pts_per_vec = num_pts_per_vec
-        self.pseudo_w = pseudo_w
-        self.wh_ratio = wh_ratio
         self.rotate_range = rotate_range
         self.froze_class = froze_class
         self.class_spesific = class_spesific
@@ -96,26 +92,22 @@ class CdnQueryGenerator:
                 of the image, shape of each (num_gts, 4).
             gt_labels (List[Tensor]): List of ground truth labels
                 of the image, shape of each (num_gts,), if None,
-                TODO:noisy_label would be None.
 
         Returns:
             TODO
         """
-        # TODO: temp only support for CDN
-        # TODO: temp assert gt_labels is not None and label_enc is not None
         if gt_labels is not None:
             assert len(gt_bboxes) == len(gt_labels), \
                 f'the length of provided gt_labels ' \
                 f'{len(gt_labels)} should be equal to' \
                 f' that of gt_bboxes {len(gt_bboxes)}'
-        # assert gt_labels is not None and label_enc is not None # TODO: adjust args
+
         batch_size = len(gt_bboxes)
         device = gt_bboxes[0].device
 
         # convert bbox
         gt_bboxes_list = []
         gt_pts_list = []
-        # refer_list = []
         loss_weight = []
         neglect_pos = []
 
@@ -124,31 +116,20 @@ class CdnQueryGenerator:
         ped_pos = []
 
         for label, bboxes, pts in zip(gt_labels, gt_bboxes, gt_pts):
-            # import ipdb; ipdb.set_trace()
-            # TODO 暂时性操作，把特定类别loss设为0
             if self.froze_class is None:
                 loss_weight.append(1 - ((bboxes[:, 0]==bboxes[:, 2]) | (bboxes[:, 1]==bboxes[:, 3])).long())
             else:
                 loss_weight.append(1 - ((bboxes[:, 0]==bboxes[:, 2]) | (bboxes[:, 1]==bboxes[:, 3]) | (label!=self.froze_class)).long())  # 只计算某个类别的dn loss
 
-            # loss_weight.append(1 - ((bboxes[:, 0]==bboxes[:, 2]) | (bboxes[:, 1]==bboxes[:, 3])).long())
             neglect_pos.append(((bboxes[:, 0]==bboxes[:, 2]) | (bboxes[:, 1]==bboxes[:, 3])).nonzero().squeeze(-1))
 
             pts_ = ((pts - bboxes[:, None, :2]) / (bboxes[:, None, 2:] - bboxes[:, None, :2])).clamp(min=0.0, max=1.0)
-            # pts_ = ((pts-pts.new_tensor([-15, -30]))/pts.new_tensor([30, 60])).clamp(min=0.0, max=1.0)
             gt_pts_list.append(pts_)
-            # refer_list.append(refer)
 
-            # bboxes = ((bboxes - bboxes.new_tensor([-15, -30, -15, -30])) / bboxes.new_tensor([30, 60, 30, 60])).clamp(min=0.0, max=1.0)
             bboxes_normalized = bbox_xyxy_to_cxcywh(bboxes)
-
-            # bboxes[:, ::2] = ((bboxes[:, ::2]-self.pc_range[0]) / self.voxel_size[0]).floor()
-            # bboxes[:, 1::2] = ((bboxes[:, 1::2]-self.pc_range[1]) / self.voxel_size[1]).floor()
-            # factor = bboxes.new_tensor([self.bev_w, self.bev_h, self.bev_w, self.bev_h]).unsqueeze(0)
-            # bboxes_normalized = bbox_xyxy_to_cxcywh(bboxes) / factor
             gt_bboxes_list.append(bboxes_normalized)
 
-            # 把divider line的位置保存下来
+            # 保存不同类别线的位置
             line_pos.append((label == 1).long())
             ped_pos.append((label == 0).long())
             bound_pos.append((label == 2).long())
@@ -157,18 +138,13 @@ class CdnQueryGenerator:
         known_num = [sum(k) for k in known]
 
         num_groups = self.get_num_groups(int(max(known_num)))
-        # num_groups = 1
         assert num_groups >= 1
 
         unmask_bbox = unmask_label = torch.cat(known)
         labels = torch.cat(gt_labels)
         boxes = torch.cat(gt_bboxes_list)
-        # choice one: 选择point gt位置
+        # choice one: 
         pt = torch.cat(gt_pts_list) 
-        # choice two: 选择矩形框斜对角线
-        # pt = torch.cat((torch.linspace(0, 1, 20).unsqueeze(-1), torch.linspace(0, 1, 20).unsqueeze(-1)), -1).repeat(labels.size(0), 1, 1).to(device)
-        
-        # refers = torch.cat(refer_list)
 
         batch_idx = torch.cat([torch.full_like(torch.ones(t.shape[0]).long(), i) for i, t in enumerate(gt_bboxes)])
 
@@ -180,33 +156,23 @@ class CdnQueryGenerator:
         known_bid = batch_idx.repeat(num_groups, 1).view(-1)
         known_bboxs = boxes.repeat(num_groups, 1)
         known_pts = pt.repeat(num_groups, 1, 1)
-        # known_refers = refers.repeat(num_groups, 1, 1)
         known_labels_expand = known_labels.clone()
         known_bbox_expand = known_bboxs.clone()
-        # loss_weight = torch.cat(loss_weight).repeat(num_groups)
 
         if noise_scale_list is not None:
             noise_scale_list = torch.cat(noise_scale_list).repeat(num_groups)
 
-        # 保存divider line的位置
+        # 
         if self.class_spesific is not None:
             line_pos = torch.cat(line_pos).repeat(num_groups)
             ped_pos = torch.cat(ped_pos).repeat(num_groups)
             bound_pos = torch.cat(bound_pos).repeat(num_groups)
 
-        single_pad = int(max(known_num))  # TODO
+        single_pad = int(max(known_num)) 
 
-        # plot时新加，不plot时注释掉
-        # if self.pt_noise_scale > 0:
-        #     rand_sign = (torch.rand_like(known_pts) * 2.0 - 1.0) / 20
-        #     known_pts_ = known_pts + rand_sign.to(device) * self.pt_noise_scale
-        #     known_pts_ = known_pts_.clamp(min=0.0, max=1.0)
-
-        # pad_size应该表示pos/neg应该pad的数目
         pad_size = int(single_pad * num_groups)
         if self.box_noise_scale > 0:
             known_bbox_ = torch.zeros_like(known_bboxs)
-            # 又变回x, y, x, y形式
             known_bbox_[:, : 2] = \
                 known_bboxs[:, : 2] - known_bboxs[:, 2:] / 2
             known_bbox_[:, 2:] = \
@@ -228,177 +194,38 @@ class CdnQueryGenerator:
                 noise = torch.mul(rand_part, diff).to(device)
                 known_bbox_ += (noise*line_pos[:, None]*self.class_spesific[1] + noise*ped_pos[:, None]*self.class_spesific[0] + \
                                 noise*bound_pos[:, None]*self.class_spesific[2])
-            # 原始不加筛选
             else:
                 if self.noise_decay:
-                    # import ipdb; ipdb.set_trace()
                     known_bbox_ += torch.mul(rand_part, diff).to(device) * self.box_noise_scale * noise_scale_list[:, None]
                 else:
                     known_bbox_ += torch.mul(rand_part, diff).to(device) * self.box_noise_scale
             known_bbox_ = known_bbox_.clamp(min=0.0, max=1.0)
 
-            # 这里面是具体筛选代码
-            # wh = known_bbox_[:, 2:] - known_bbox_[:, :2]
-            # select_idx = ((diff[:, 0]<5/60) & (wh[:, 1]/wh[:, 0]>self.wh_ratio))
-            # rand_sign_x = torch.randint_like(add[select_idx, :1], low=0, high=2, dtype=torch.float32)
-            # rand_sign_x = rand_sign_x * 2.0 - 1.0
-            # rand_part_x = torch.rand_like(add[select_idx, :1])
-            # add[select_idx, ::2] += (self.pseudo_w * rand_part_x * rand_sign_x).repeat(1, 2)
-
-            # select_idx = ((diff[:, 1]<5/120) & (wh[:, 0]/wh[:, 1]>self.wh_ratio))
-            # rand_sign_y = torch.randint_like(add[select_idx, :1], low=0, high=2, dtype=torch.float32)
-            # rand_sign_y = rand_sign_y * 2.0 - 1.0
-            # rand_part_y = torch.rand_like(add[select_idx, :1])
-            # add[select_idx, 1::2] += (self.pseudo_w / 2 * rand_part_y * rand_sign_y).repeat(1, 2)
-            
-            # 筛选时用
-            # known_bbox_ = known_bbox_ + add * self.box_noise_scale
-            # known_bbox_ = known_bbox_.clamp(min=0.0, max=1.0)
-            # 画图用
-            # known_bbox_2 = known_bbox_ + add * self.box_noise_scale
-            # known_bbox_2 = known_bbox_2.clamp(min=0.0, max=1.0)
-
-            # # plot
-            # import cv2 
-            # import numpy as np
-            # # 分别得到扰动前后点的位置
-            # pt_before_noise = known_bbox_[:, None, :2] + known_pts * wh[:, None, :]
-            # pt_before_noise[:, :, 0] *= 300
-            # pt_before_noise[:, :, 1] *= 600
-            # wh_ = known_bbox_2[:, 2:] - known_bbox_2[:, :2]
-            # pt_after_noise = known_bbox_2[:, None, :2] + known_pts_ * wh_[:, None, :]
-            # pt_after_noise[:, :, 0] *= 300
-            # pt_after_noise[:, :, 1] *= 600
-
-            # image1 = np.zeros((600, 300, 3))
-            # image2 = np.zeros((600, 300, 3))
-            # box_1 = known_bbox_[:known_num[0].item()].cpu().numpy()
-            # label_1 = known_labels[:known_num[0].item()].cpu().numpy()
-            # box_1[:, ::2] *= 300
-            # box_1[:, 1::2] *= 600
-            # box_1 = box_1.astype(int)
-            # box_1_ = known_bbox_2[:known_num[0].item()].cpu().numpy()
-            # box_1_[:, ::2] *= 300
-            # box_1_[:, 1::2] *= 600
-            # box_1_ = box_1_.astype(int)
-            # pt_before_1 = pt_before_noise[:known_num[0].item()].cpu().numpy().astype(int)
-            # pt_after_1 = pt_after_noise[:known_num[0].item()].cpu().numpy().astype(int)
-
-            # for l in range(box_1.shape[0]):
-            #     image1 = np.zeros((600, 300, 3))
-            #     cv2.rectangle(image1, box_1[l, :2], box_1[l, 2:], (0, 0, 255))
-            #     for k in range(20):
-            #         cv2.circle(image1, pt_before_1[l, k], 2, (0, 0, 255), -1)
-            #     cv2.rectangle(image1, box_1_[l, :2], box_1_[l, 2:], (255, 0, 0))
-            #     for k in range(20):
-            #         cv2.circle(image1, pt_after_1[l, k], 2, (255, 0, 0), -1)
-            #     cv2.putText(image1, str(label_1[l]), (150, 300), cv2.FONT_HERSHEY_COMPLEX, 1, (255, 255, 255), 1)
-            #     cv2.imwrite('vis/origin/image1_'+str(l)+'.jpg', image1)
-            # box_2 = known_bbox_[known_num[0].item():known_num[0].item()+known_num[1].item()].cpu().numpy()
-            # label_2 = known_labels[known_num[0].item():known_num[0].item()+known_num[1].item()].cpu().numpy()
-            # box_2[:, ::2] *= 300
-            # box_2[:, 1::2] *= 600
-            # box_2 = box_2.astype(int)
-            # box_2_ = known_bbox_2[known_num[0].item():known_num[0].item()+known_num[1].item()].cpu().numpy()
-            # box_2_[:, ::2] *= 300
-            # box_2_[:, 1::2] *= 600
-            # box_2_ = box_2_.astype(int)
-            # pt_before_2 = pt_before_noise[known_num[0].item():known_num[0].item()+known_num[1].item()].cpu().numpy().astype(int)
-            # pt_after_2 = pt_after_noise[known_num[0].item():known_num[0].item()+known_num[1].item()].cpu().numpy().astype(int)
-            # for l in range(box_2.shape[0]):
-            #     image2 = np.zeros((600, 300, 3))
-            #     cv2.rectangle(image2, box_2[l, :2], box_2[l, 2:], (0, 0, 255))
-            #     for k in range(20):
-            #         cv2.circle(image2, pt_before_2[l, k], 2, (0, 0, 255), -1)
-            #     cv2.rectangle(image2, box_2_[l, :2], box_2_[l, 2:], (255, 0, 0))
-            #     for k in range(20):
-            #         cv2.circle(image2, pt_after_2[l, k], 2, (255, 0, 0), -1)
-            #     cv2.putText(image2, str(label_2[l]), (150, 300), cv2.FONT_HERSHEY_COMPLEX, 1, (255, 255, 255), 1)
-            #     cv2.imwrite('vis/origin/image2_'+str(l)+'.jpg', image2)
-
-            # import ipdb; ipdb.set_trace()
-
-            # 又转回x,y,w,h形式
             known_bbox_expand[:, :2] = \
                 (known_bbox_[:, :2] + known_bbox_[:, 2:]) / 2
             known_bbox_expand[:, 2:] = \
                 known_bbox_[:, 2:] - known_bbox_[:, :2]
         else:
             known_bbox_ = torch.zeros_like(known_bboxs)
-            # 又变回x, y, x, y形式
             known_bbox_[:, : 2] = \
                 known_bboxs[:, : 2] - known_bboxs[:, 2:] / 2
             known_bbox_[:, 2:] = \
                 known_bboxs[:, :2] + known_bboxs[:, 2:] / 2
-        
-        # 单独对divider line进行加噪：整体上下左右平移
-        # if self.class_spesific:
-        #     import ipdb; ipdb.set_trace()
 
         if self.pt_noise_scale > 0:
             rand_sign = (torch.rand_like(known_pts) * 2.0 - 1.0) / 20
             known_pts += rand_sign.to(device) * self.pt_noise_scale
             known_pts = known_pts.clamp(min=0.0, max=1.0)
 
-        # 进行旋转
+        # Rotate
         if self.rotate_range > 0:
             random_theta = (np.random.rand(known_bbox_.size(0)) * 2 - 1) * self.rotate_range * math.pi / 180
             R_matrix = rotate_matrix(random_theta)
             known_refers = (known_bbox_[:, None, :2] + known_pts * known_bbox_expand[:, None, 2:] - known_bbox_expand[:, None, :2]).permute(0, 2, 1)
             known_refers = torch.bmm(torch.from_numpy(R_matrix).to(torch.float32).to(device), known_refers).permute(0, 2, 1)
             known_refers = known_refers + known_bbox_expand[:, None, :2]
-
-            # plot
-            # import cv2
-            # pt_before_1 = known_bbox_[:, None, :2] + known_pts * known_bbox_expand[:, None, 2:]
-            # pt_before_1[:, :, 0] *= 300
-            # pt_before_1[:, :, 1] *= 600
-            # pt_before_1 = pt_before_1.cpu().numpy().astype(int)
-            # pt_after_1 = known_refers.cpu().numpy()
-            # pt_after_1[:, :, 0] *= 300
-            # pt_after_1[:, :, 1] *= 600
-            # pt_after_1 = pt_after_1.astype(int)
-            # for l in range(known_refers.shape[0]):
-            #     image1 = np.zeros((600, 300, 3))
-            #     # cv2.rectangle(image1, box_1[l, :2], box_1[l, 2:], (0, 0, 255))
-            #     for k in range(20):
-            #         cv2.circle(image1, pt_before_1[l, k], 2, (0, 0, 255), -1)
-            #     # cv2.rectangle(image1, box_1_[l, :2], box_1_[l, 2:], (255, 0, 0))
-            #     for k in range(20):
-            #         cv2.circle(image1, pt_after_1[l, k], 2, (255, 0, 0), -1)
-            #     # cv2.putText(image1, str(label_1[l]), (150, 300), cv2.FONT_HERSHEY_COMPLEX, 1, (255, 255, 255), 1)
-            #     cv2.imwrite('vis/rotate/image1_'+str(l)+'.jpg', image1)
         else:
             known_refers = known_bbox_[:, None, :2] + known_pts * known_bbox_expand[:, None, 2:]
-        
-        # 鸡生蛋，蛋生鸡gt
-        # known_refers = known_bbox_[:, None, :2] + known_pts * known_bbox_expand[:, None, 2:]
-
-        # 可视化
-        # import matplotlib.pyplot as plt
-        # import numpy as np
-        # from PIL import Image, ImageDraw
-        # import os
-
-        # colors_plt = ['orange', 'b', 'g']
-        # plt.figure(figsize=(2, 4))
-        # plt.xlim(-15.5, 15.5)
-        # plt.ylim(-30.5, 30.5)
-        # plt.axis('off')
-        # import ipdb; ipdb.set_trace()
-        # for k in range(len(prev_lines[i])):
-        #     pts = prev_lines[i][k][0].reshape(-1, 2).cpu().numpy()
-        #     pts = pts * np.array([60, 30]) - np.array([30, 15])
-            
-        #     x = pts[:, 1]
-        #     y = pts[:, 0]
-
-        #     plt.plot(x, y, color=colors_plt[prev_labels[i][k].item()],linewidth=1,alpha=0.8,zorder=-1)
-        #     plt.scatter(x, y, color=colors_plt[prev_labels[i][k].item()],s=2,alpha=0.8,zorder=-1)
-
-        # gt_fixedpts_map_path = os.path.join('/data/code/StreamMapNet/vis', str(self.iter)+'_'+str(vis_idx)+'_prev_gt'+'.png')
-        # plt.savefig(gt_fixedpts_map_path, bbox_inches='tight', format='png',dpi=1200)
-        # plt.close()   
 
         if self.label_noise_scale > 0:
             p = torch.rand_like(known_labels_expand.float())
@@ -407,10 +234,8 @@ class CdnQueryGenerator:
             new_label = torch.randint_like(chosen_indice, 0, self.num_classes)
             known_labels_expand.scatter_(0, chosen_indice, new_label)
 
-        # TODO 这里没有取 inverse_sigmoid
         m = known_labels_expand.long().to(device)
         input_label_embed = label_enc(m)
-        # input_bbox_embed = inverse_sigmoid(known_bbox_expand, eps=1e-3)
         input_bbox_embed = known_bbox_expand
         padding_label = torch.zeros(pad_size, self.hidden_dim).to(device)
         padding_bbox = torch.zeros(pad_size, 4).to(device)
@@ -419,11 +244,6 @@ class CdnQueryGenerator:
         input_query_bbox = padding_bbox.repeat(batch_size, 1, 1)
         input_query_pts = padding_pts.repeat(batch_size, 1, 1, 1)
         denoise_refers = padding_pts.repeat(batch_size, 1, 1, 1)
-
-        # post_dn = []
-        # for num in known_num:
-        #     single_id = torch.cat([torch.tensor(range(num)) + i*single_pad for i in range(num_groups)])
-        #     post_dn.append(single_id.long())
 
         map_known_indice = torch.tensor([]).to(device)
         if len(known_num):
@@ -463,9 +283,6 @@ class CdnQueryGenerator:
                 attn_mask[single_pad * i:single_pad *
                           (i + 1), :single_pad * i] = True
 
-        # 设置斜对角线，而非gt point的相对位置
-        # input_query_pts = torch.cat((torch.linspace(0, 1, 20).unsqueeze(-1), torch.linspace(0, 1, 20).unsqueeze(-1)), -1).unsqueeze(0).repeat(batch_size, input_query_bbox.size(1), 1, 1).to(device)
-
         dn_meta = {
             'pad_size': pad_size,
             'num_dn_group': num_groups,
@@ -474,15 +291,11 @@ class CdnQueryGenerator:
             'map_known_indice': map_known_indice,
             'loss_weight': loss_weight,
         }
-        # if (loss_weight==0).sum() != 0:
-        #     import ipdb; ipdb.set_trace()
 
         # 去掉完全的直线，分母为0
         for i, pos in enumerate(neglect_pos):
             if len(pos) != 0:
                 for j in range(num_groups):
                     denoise_refers[i][pos+single_pad * j] = gt_pts[i][pos]
-
-        # import ipdb; ipdb.set_trace()
 
         return input_query_label, input_query_bbox, input_query_pts, attn_mask, dn_meta, denoise_refers

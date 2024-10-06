@@ -182,7 +182,6 @@ class SQDMapDetectorHead(nn.Module):
         self.reference_points_embed = nn.Linear(self.embed_dims, self.num_points * 2)
 
         if self.dn_cfg is not None:
-            # self.dn_bbox = Linear(self.embed_dims * 2, self.embed_dims)
             self.dn_pts = Linear(self.embed_dims//2, self.embed_dims//2)
             self.label_embedding = nn.Embedding(self.dn_cls_num, self.embed_dims//2)
             self.query_convert = Linear(self.embed_dims, self.embed_dims)
@@ -353,19 +352,12 @@ class SQDMapDetectorHead(nn.Module):
     def denoise(self, gt_vecs_list, gt_labels_list, device):
         gt_pts_list = [gt_bboxes[:, 0, :].reshape(-1, self.num_points, 2) for gt_bboxes in gt_vecs_list]
 
-        for i in gt_labels_list:
-            if len(i) == 0:
-                import pdb; pdb.set_trace() 
-
         gt_bboxes_list = []
         for gt in gt_pts_list:
             gt_bboxes_list.append(torch.cat((gt.min(1)[0], gt.max(1)[0]), -1))
 
         if self.dn_cfg is not None:
-            if self.dn_cfg.get('neg', False) is True:
-                self.dn_generator = PNCdnQueryGenerator(**self.dn_cfg)
-            else:
-                self.dn_generator = CdnQueryGenerator(**self.dn_cfg)
+            self.dn_generator = CdnQueryGenerator(**self.dn_cfg)
     
             dn_query_content, input_query_bbox, input_query_pts, attn_mask, dn_meta, denoise_refers \
                             = self.dn_generator(gt_bboxes_list, gt_pts_list, gt_labels_list, self.label_embedding)
@@ -373,10 +365,6 @@ class SQDMapDetectorHead(nn.Module):
             pe_pts = pe_pts.reshape(pe_pts.size(0), -1, self.num_points, pe_pts.size(2)).flatten(2)
             dn_query_pos = self.instance_convert(pe_pts)
             query = self.query_convert(torch.cat((dn_query_content, dn_query_pos), -1))
-
-            if torch.isnan(query).any() or torch.isinf(query).any() or torch.isnan(denoise_refers).any() or torch.isinf(denoise_refers).any():
-                import pdb; pdb.set_trace() 
-                torch.isnan(denoise_refers.sum((2, 3))).any()
             
             return query, attn_mask, dn_meta, denoise_refers
 
@@ -413,10 +401,7 @@ class SQDMapDetectorHead(nn.Module):
                     gt_labels_list.append(gt_labels_list_x[i][select_idx])
                     last_save_idx[i] = select_idx
                     noise_scale_list.append(noise_scale[i][select_idx])
-            # if gt_bboxes is not None:
-            #     pos_valid.append(i)
-            #     gt_pts_list.append(gt_bboxes[:, 0, :].reshape(-1, 20, 2))
-            #     gt_labels_list.append(gt_labels_list_x[i])
+
             else:
                 gt_pts_list.append(cur_gt_vecs_list[i][:, 0, :].reshape(-1, self.num_points, 2))
                 gt_labels_list.append(cur_gt_labels_list_x[i])
@@ -436,88 +421,21 @@ class SQDMapDetectorHead(nn.Module):
             dn_query_pos = self.instance_convert(pe_pts)
             query = self.query_convert(torch.cat((dn_query_content, dn_query_pos), -1))
 
-            if torch.isnan(query).any() or torch.isinf(query).any() or torch.isnan(denoise_refers).any() or torch.isinf(denoise_refers).any():
-                import pdb; pdb.set_trace() 
-                torch.isnan(denoise_refers.sum((2, 3))).any()
-
-            # TODO 如果把prev gt转到当前帧再DN，则不需要query转换
-            # for i in pos_valid:
-            #     prev2curr_matrix = prev2curr_matrix_list[i]
-            #     query_num_tmp = query[i].size(0)
-            #     pos_encoding = prev2curr_matrix.float()[:3].view(-1)
-            #     query[i] = self.query_update(query[i], pos_encoding.view(1, -1).repeat(query_num_tmp, 1))
-
-            #     # ref pts
-            #     prev_ref_pts = denoise_refers[i]
-            #     denormed_ref_pts = prev_ref_pts * self.roi_size + self.origin # (num_prop, num_pts, 2)
-            #     denormed_ref_pts = torch.cat([
-            #         denormed_ref_pts,
-            #         denormed_ref_pts.new_zeros((query_num_tmp, self.num_points, 1)), # z-axis
-            #         denormed_ref_pts.new_ones((query_num_tmp, self.num_points, 1)) # 4-th dim
-            #     ], dim=-1) # (num_prop, num_pts, 4)
-
-            #     curr_ref_pts = torch.einsum('lk,ijk->ijl', prev2curr_matrix, denormed_ref_pts.double()).float()
-            #     normed_ref_pts = (curr_ref_pts[..., :2] - self.origin) / self.roi_size # (num_prop, num_pts, 2)
-            #     denoise_refers[i] = torch.clip(normed_ref_pts, min=0., max=1.)
-
-            # for i, j in enumerate(pos_valid):
-            #     prev2curr_matrix = prev2curr_matrix_list[j]
-            #     query_num_tmp = query[i].size(0)
-            #     pos_encoding = prev2curr_matrix.float()[:3].view(-1)
-            #     query[i] = self.query_update(query[i], pos_encoding.view(1, -1).repeat(query_num_tmp, 1))
-
-            #     # ref pts
-            #     prev_ref_pts = denoise_refers[i]
-            #     denormed_ref_pts = prev_ref_pts * self.roi_size + self.origin # (num_prop, num_pts, 2)
-            #     denormed_ref_pts = torch.cat([
-            #         denormed_ref_pts,
-            #         denormed_ref_pts.new_zeros((query_num_tmp, self.num_points, 1)), # z-axis
-            #         denormed_ref_pts.new_ones((query_num_tmp, self.num_points, 1)) # 4-th dim
-            #     ], dim=-1) # (num_prop, num_pts, 4)
-
-            #     curr_ref_pts = torch.einsum('lk,ijk->ijl', prev2curr_matrix, denormed_ref_pts.double()).float()
-            #     normed_ref_pts = (curr_ref_pts[..., :2] - self.origin) / self.roi_size # (num_prop, num_pts, 2)
-            #     denoise_refers[i] = torch.clip(normed_ref_pts, min=0., max=1.)
-            
-            # 一个batch有None，有需要dn的，分开处理
-            # if len(pos_valid) != len(gt_vecs_list):
-            #     tmp_query = []
-            #     tmp_refers = []
-            #     for i in range(len(gt_vecs_list)):
-            #         if i in pos_valid:
-            #             find_idx = pos_valid.index(i)
-            #             tmp_query.append(query[find_idx])
-            #             tmp_refers.append(denoise_refers[find_idx])
-            #             # 如果dn query求的batch位置和整体位置不一致
-            #             if i != find_idx:
-            #                 dn_meta['known_bid'][dn_meta['known_bid']==find_idx] = i
-            #         else:
-            #             tmp_query.append(torch.zeros_like(query[0]))
-            #             tmp_refers.append(torch.zeros_like(denoise_refers[0]))
-            #     query = torch.stack(tmp_query, dim=0)
-            #     denoise_refers = torch.stack(tmp_refers, dim=0)
-
             dn_meta['stream_valid'] = pos_valid
             dn_meta['last_valid_idx'] = last_save_idx
             return query, attn_mask, dn_meta, denoise_refers
 
     @staticmethod
-    def chamfer_distance(array1, array2):
-        # array1 = array1[0].reshape(-1, 2)
-        # array2 = array2[0].reshape(-1, 2)
-        
+    def chamfer_distance(array1, array2):        
         distances = torch.sqrt(torch.square(array1[:, None, :] - array2[None, :, :]).sum(-1)) 
 
         return (distances.min(1)[0].mean() + distances.min(0)[0].mean()).item()
 
-    def adaptive_select(self, prev_lines, prev_labels, lines, labels, prev2curr_matrix_list):
+    def adaptive_temporal_matching(self, prev_lines, prev_labels, lines, labels, prev2curr_matrix_list):
         ids = []
         noise_scale = []
 
-        # 可视化用
-        vis_idx = 0
         for i, prev_l in enumerate(prev_labels):
-            # print(prev_l is None)
             if prev_l is None:
                 ids.append(None)
                 noise_scale.append(None)
@@ -553,168 +471,19 @@ class SQDMapDetectorHead(nn.Module):
                     if cost[p] < value_min:
                         value_min = cost[p]
                         idx_min = p
-                # import ipdb; ipdb.set_trace()
+
                 if self.chamfer_thresh is not None:
                     chamfer_thresh = self.chamfer_thresh
                 else:
-                    # chamfer_thresh = min((cur_real_gt[j].max(0)[0] - cur_real_gt[j].min(0)[0]).mean().item()*self.tolerant_noise, 5)
-                    # TODO
                     curve_scale = (cur_real_gt[j].max(0)[0] - cur_real_gt[j].min(0)[0])
                     curve_scale = math.sqrt((curve_scale[0]*curve_scale[0]).item() + (curve_scale[1]*curve_scale[1]).item()) 
                     chamfer_thresh = min(curve_scale * self.tolerant_noise, 10)
-                # 之前是直接设置3.5
+
                 if value_min < chamfer_thresh and cost_tmp[idx_min] > value_min:
                     id_tmp[idx_min] = j
                     cost_tmp[idx_min] = value_min
                     chamfer_noise[idx_min:idx_min+1] = 1 - min(value_min/((cur_real_gt[j].max(0)[0] - cur_real_gt[j].min(0)[0]).mean().item()*self.noise_decay_scale[prev_l[idx_min].item()]), 0.99)
             noise_scale.append(chamfer_noise)
-
-            """# 可视化
-            import matplotlib.pyplot as plt
-            import numpy as np
-            from PIL import Image, ImageDraw
-            import os
-
-            car_img = Image.open('/data/code/MapTR/figs/lidar_car.png')
-            colors_plt = ['orange', 'b', 'g']
-            plt.figure(figsize=(2, 4))
-            plt.xlim(-15.5, 15.5)
-            plt.ylim(-30.5, 30.5)
-            plt.axis('off')
-            for k in range(len(prev_lines[i])):
-                pts = prev_lines[i][k][0].reshape(-1, 2).cpu().numpy()
-                pts = pts * np.array([60, 30]) - np.array([30, 15])
-                
-                x = pts[:, 1]
-                y = pts[:, 0]
-
-                # 先不画车道线
-                # if prev_labels[i][k].item() == 0:
-                    # continue
-                plt.plot(x, y, color=colors_plt[prev_labels[i][k].item()],linewidth=1,alpha=0.8,zorder=-1)
-                plt.scatter(x, y, color=colors_plt[prev_labels[i][k].item()],s=2,alpha=0.8,zorder=-1)
-                
-            plt.imshow(car_img, extent=[-1.2, 1.2, -1.5, 1.5])
-
-            gt_fixedpts_map_path = os.path.join('/data/code/SQDMapNet/vis_new', str(self.iter)+'_'+str(vis_idx)+'_prev_gt'+'.png')
-            plt.savefig(gt_fixedpts_map_path, bbox_inches='tight', format='png',dpi=1200)
-            plt.close()   
-
-            # plt.figure(figsize=(2, 4))
-            # plt.xlim(-15.5, 15.5)
-            # plt.ylim(-30.5, 30.5)
-            # plt.axis('off')
-
-            # # import ipdb; ipdb.set_trace()
-            # curr_ref_pts[:, :, 1:2] = torch.clip(curr_ref_pts[:, :, 1:2], min=-15.0, max=15.0)
-            # curr_ref_pts[:, :, 0:1] = torch.clip(curr_ref_pts[:, :, 0:1], min=-30.0, max=30.0)
-            # for k in range(len(curr_ref_pts)):
-            #     pts = curr_ref_pts[k][:, :2].cpu().numpy()
-            #     # pts = pts * np.array([60, 30]) - np.array([30, 15])
-                
-            #     x = pts[:, 1]
-            #     y = pts[:, 0]
-
-            #     # 先不画车道线
-            #     if prev_labels[i][k].item() == 0:
-            #         continue
-            #     plt.plot(x, y, color=colors_plt[prev_labels[i][k].item()],linewidth=1,alpha=0.8,zorder=-1)
-            #     plt.scatter(x, y, color=colors_plt[prev_labels[i][k].item()],s=2,alpha=0.8,zorder=-1)
-                
-            # plt.imshow(car_img, extent=[-1.2, 1.2, -1.5, 1.5])
-
-            # gt_fixedpts_map_path = os.path.join('/data/code/SQDMapNet/vis', str(self.iter)+'_'+str(vis_idx)+'_prev_warp'+'.png')
-            # plt.savefig(gt_fixedpts_map_path, bbox_inches='tight', format='png',dpi=1200)
-            # plt.close()  
-
-            plt.figure(figsize=(2, 4))
-            plt.xlim(-15.5, 15.5)
-            plt.ylim(-30.5, 30.5)
-            plt.axis('off')
-
-            cur_npz = []
-            for k in range(len(cur_real_gt)):
-                pts = cur_real_gt[k].cpu().numpy()
-                # pts = pts * np.array([60, 30]) - np.array([30, 15])
-                
-                x = pts[:, 1]
-                y = pts[:, 0]
-
-                # 先不画车道线
-                # if labels[i][k].item() == 0:
-                    # continue
-
-                cur_npz.append(np.stack((x, y), 1))
-
-                plt.plot(x, y, color=colors_plt[labels[i][k].item()],linewidth=1,alpha=0.8,zorder=-1)
-                plt.scatter(x, y, color=colors_plt[labels[i][k].item()],s=2,alpha=0.8,zorder=-1)
-
-            # cur_npz = np.stack(cur_npz, 0)
-            # np.save("/data/code/SQDMapNet/save_npy/cur_"+str(self.iter)+'_'+str(vis_idx)+'.npz', cur_npz)
-            plt.imshow(car_img, extent=[-1.2, 1.2, -1.5, 1.5])
-
-            gt_fixedpts_map_path = os.path.join('/data/code/SQDMapNet/vis_new', str(self.iter)+'_'+str(vis_idx)+'_cur_gt'+'.png')
-            plt.savefig(gt_fixedpts_map_path, bbox_inches='tight', format='png',dpi=1200)
-            plt.close()  
-
-
-            #  把上一帧warp的和当前帧的画到一张图
-            curr_ref_pts[:, :, 1:2] = torch.clip(curr_ref_pts[:, :, 1:2], min=-15.0, max=15.0)
-            curr_ref_pts[:, :, 0:1] = torch.clip(curr_ref_pts[:, :, 0:1], min=-30.0, max=30.0)
-            prev_npz = []
-            for k in range(len(curr_ref_pts)):
-                pts = curr_ref_pts[k][:, :2].cpu().numpy()
-                
-                x = pts[:, 1]
-                y = pts[:, 0]
-
-                # 先不画车道线
-                if prev_labels[i][k].item() == 0:
-                    continue
-                
-                prev_npz.append(np.stack((x, y), 1))
-                plt.plot(x, y, color='b',linewidth=1,alpha=0.8,zorder=-1)
-                plt.scatter(x, y, color='b',s=4,alpha=0.8,zorder=-1)
-
-            prev_npz = np.stack(prev_npz, 0)
-            # np.save("/data/code/SQDMapNet/save_npy/prev_"+str(self.iter)+'_'+str(vis_idx)+'.npz', prev_npz)
-
-            plt.imshow(car_img, extent=[-1.2, 1.2, -1.5, 1.5])
-
-            gt_fixedpts_map_path = os.path.join('/data/code/SQDMapNet/vis_new', str(self.iter)+'_'+str(vis_idx)+'_cur_gt'+'.png')
-            # plt.savefig(gt_fixedpts_map_path, bbox_inches='tight', format='png',dpi=1200)
-            plt.close()  
-
-            vis_idx += 1
-            # import ipdb; ipdb.set_trace()
-            """
-
-            # # 可视化 origin
-            # import cv2
-            # import numpy as np
-            # color_table = {0:(255, 0, 0), 1:(0, 255, 0), 2:(0, 0, 255)}
-            # image_prev = np.zeros((300, 600, 3))
-            # image_cur = np.zeros((300, 600, 3))
-            
-            # for k in range(len(prev_lines[i])):
-            #     color = color_table[prev_labels[i][k].item()]
-            #     line = prev_lines[i][k][0].reshape(-1, 2).cpu().numpy()
-            #     tmp = (line * np.array([600, 300])).astype(int)
-            #     for n in range(20):
-            #         cv2.circle(image_prev, tmp[n], 2, color, -1)
-            #     cv2.putText(image_prev, str(id_tmp[k]), tmp[9], cv2.FONT_HERSHEY_COMPLEX, 1, color, 1)
-            #     cv2.putText(image_prev, str(round(cost_tmp[k], 1)), tmp[1], cv2.FONT_HERSHEY_COMPLEX, 1, color, 1)  
-            # cv2.imwrite('vis/'+str(self.iter)+'_'+str(vis_idx)+'_prev.jpg', image_prev)
-
-            # for k in range(len(lines[i])):
-            #     color = color_table[labels[i][k].item()]
-            #     line = lines[i][k][0].reshape(-1, 2).cpu().numpy()
-            #     tmp = (line * np.array([600, 300])).astype(int)
-            #     for n in range(20):
-            #         cv2.circle(image_cur, tmp[n], 2, color, -1)
-            #     cv2.putText(image_cur, str(k), tmp[9], cv2.FONT_HERSHEY_COMPLEX, 1, color, 1) 
-            # cv2.imwrite('vis/'+str(self.iter)+'_'+str(vis_idx)+'_cur.jpg', image_cur)
-            # vis_idx += 1
 
             ids.append(id_tmp)
         
@@ -763,7 +532,7 @@ class SQDMapDetectorHead(nn.Module):
         last_gt = self.stream_dn_target_memory.get(img_metas)
         last_gt_list, last_label_list = last_gt['gt'], last_gt['label_list']
 
-        last_id_list, noise_scale = self.adaptive_select(copy.deepcopy(last_gt_list), copy.deepcopy(last_label_list),
+        last_id_list, noise_scale = self.adaptive_temporal_matching(copy.deepcopy(last_gt_list), copy.deepcopy(last_label_list),
                         copy.deepcopy(gts[0]['lines']), copy.deepcopy(gts[0]['labels']), prev2curr_matrix_list)
         
 
@@ -781,23 +550,11 @@ class SQDMapDetectorHead(nn.Module):
                             bev_features.device)
             dn_num = stream_dn_meta['pad_size']
         else:
-            # if prop_query_embedding is not None:
-            #     mask_size = query_embedding.size(1) + prop_query_embedding.size(1)
-            # else:
-            #     mask_size = query_embedding.size(1)
-            # stream_self_attn_mask = torch.ones(mask_size, mask_size).to(bev_features.device) < 0
             stream_self_attn_mask = None
             stream_dn_query = None
             stream_denoise_refers = None
             dn_num = 0
 
-        # 得到gt bbox和points，进行denoise预处理
-        # if self.dn_cfg is not None:
-        #     dn_query, self_attn_mask, dn_meta, denoise_refers \
-        #                  = self.denoise(copy.deepcopy(gts[0]['lines']), copy.deepcopy(gts[0]['labels']), bev_features.device)
-        #     dn_num = dn_meta['pad_size']
-
-        # outs_dec: (num_layers, num_qs, bs, embed_dims)
         inter_queries, init_reference, inter_references = self.transformer(
             mlvl_feats=[bev_features,],
             mlvl_masks=[img_masks.type(torch.bool)],
@@ -840,7 +597,6 @@ class SQDMapDetectorHead(nn.Module):
         loss_dict, det_match_idxs, det_match_gt_idxs, gt_lines_list = self.loss(gts=gts, preds=outputs)
         
         if dn_num != 0:
-            # DN输出
             outputs_dn = []
             for i, (queries) in enumerate(inter_queries):
                 reg_points = inter_references[i][:, :dn_num] # (bs, num_q, num_points, 2)
@@ -902,7 +658,7 @@ class SQDMapDetectorHead(nn.Module):
             loss_dict['trans_loss'] = trans_loss
         
         self.iter += 1
-        # print(self.iter)
+        
         return outputs, loss_dict, det_match_idxs, det_match_gt_idxs
     
     def forward_test(self, bev_features, img_metas):
@@ -1240,17 +996,13 @@ class SQDMapDetectorHead(nn.Module):
         group = dn_meta['num_dn_group']
         gt_labels_list = [label for label in gts['labels']]
         cls_labels = torch.cat(gt_labels_list, dim=0).repeat(group) # (bs*num_q, )
-        # cls_weights = torch.ones_like(cls_labels) # (bs*num_q, )
         cls_weights = dn_meta['loss_weight']
 
         gt_pts_list = [gt_line[:, 0, :] for gt_line in gts['lines']]
         gt_lines = torch.cat(gt_pts_list, 0).repeat(group, 1)
-        # line_weights = torch.ones_like(gt_lines)
         line_weights = dn_meta['loss_weight'][:, None].repeat(1, gt_lines.size(1))
 
         # construct weighted avg_factor to match with the official DETR repo
-        # TODO num_total_pos这里计算多了
-        # import ipdb; ipdb.set_trace()
         num_total_pos = dn_meta['loss_weight'].sum().item()
         # num_total_pos = cls_labels.size(0)
         cls_avg_factor = num_total_pos * 1.0
@@ -1270,8 +1022,7 @@ class SQDMapDetectorHead(nn.Module):
         # Compute the average number of gt boxes across all gpus, for
         # normalization purposes
         num_total_pos = loss_cls.new_tensor([num_total_pos])
-        # print(self.iter, "   ", num_total_pos,  "   ", cls_scores.shape,  "   ", cls_scores.shape)
-        num_total_pos = torch.clamp(reduce_mean(num_total_pos), min=1).item()   # 这行有问题报错
+        num_total_pos = torch.clamp(reduce_mean(num_total_pos), min=1).item()   
 
         pred_lines = torch.stack(preds['lines'], dim=0)
         pred_lines = pred_lines[(dn_meta['known_bid'].long(), dn_meta['map_known_indice'].long())] 
@@ -1303,7 +1054,6 @@ class SQDMapDetectorHead(nn.Module):
             f'{self.__class__.__name__} only supports ' \
             f'for gt_bboxes_ignore setting to None.'
         # Since there might have multi layer
-        # dn_meta_tmp = [dn_meta for _ in range(6)]
         losses = []
 
         new_gts = {}
@@ -1315,20 +1065,15 @@ class SQDMapDetectorHead(nn.Module):
                 tmp_labels = []
                 tmp_lines = []
                 tmp_idx = -1
-                # import ipdb; ipdb.set_trace()
-                # for j in range(ids.size(0)):
+
                 for j, id_per in enumerate(ids):
-                    # import ipdb; ipdb.set_trace()
                     if dn_meta['last_valid_idx'][i][j] == False:
                         continue
                     tmp_idx += 1
-                    # pos = (gts['id'][i]==ids[j]).nonzero().squeeze(-1)
                     if id_per == -1: #or len(pos)==0:
-                        # import ipdb; ipdb.set_trace()
                         tmp_lines.append(last_gts[i][j])
                         tmp_labels.append(last_labels[i][j])
-                        # 需要把匹配不上的gt loss置0
-                        # dn_meta['loss_weight'][i][j] = 0 
+                        # 匹配不上的gt loss置0 
                         dn_meta['loss_weight'][i][tmp_idx] = 0 
                     else:
                         tmp_lines.append(gts['lines'][i][id_per])
@@ -1344,55 +1089,8 @@ class SQDMapDetectorHead(nn.Module):
         new_gts['lines'] = tmp_lines_list
         new_gts = [copy.deepcopy(new_gts) for _ in range(6)]
 
-        # multi_apply(self.loss_dn_single, preds, gts, dn_meta_tmp, reduction=reduction)
         for i in range(len(preds)):
             losses.append(self.loss_dn_single(preds[i], new_gts[i], dn_meta, reduction=reduction))
-        # import ipdb; ipdb.set_trace()
-
-        # Format the losses
-        loss_dict = dict()
-        # loss from the last decoder layer
-        for k, v in losses[-1].items():
-            loss_dict[k] = v
-        
-        # Loss from other decoder layers
-        num_dec_layer = 0
-        for loss in losses[:-1]:
-            for k, v in loss.items():
-                loss_dict[f'd{num_dec_layer}.{k}'] = v
-            num_dec_layer += 1
-
-        return loss_dict
-
-    @force_fp32(apply_to=('gt_lines_list', 'preds_dicts'))
-    def loss_dn_normal(self,
-             gts,
-             preds,
-             dn_meta=None,
-             gt_bboxes_ignore=None,
-             reduction='mean'):
-        assert gt_bboxes_ignore is None, \
-            f'{self.__class__.__name__} only supports ' \
-            f'for gt_bboxes_ignore setting to None.'
-        # Since there might have multi layer
-        # dn_meta_tmp = [dn_meta for _ in range(6)]
-        losses = []
-
-        new_gts = {}
-        tmp_labels_list = []
-        tmp_lines_list = []
-        import ipdb; ipdb.set_trace()
- 
-        dn_meta['loss_weight'] = torch.cat(dn_meta['loss_weight']).repeat(dn_meta['num_dn_group'])
-
-        new_gts['labels'] = tmp_labels_list
-        new_gts['lines'] = tmp_lines_list
-        new_gts = [copy.deepcopy(new_gts) for _ in range(6)]
-
-        # multi_apply(self.loss_dn_single, preds, gts, dn_meta_tmp, reduction=reduction)
-        for i in range(len(preds)):
-            losses.append(self.loss_dn_single(preds[i], new_gts[i], dn_meta, reduction=reduction))
-        # import ipdb; ipdb.set_trace()
 
         # Format the losses
         loss_dict = dict()

@@ -38,9 +38,9 @@ cat2id = {
 num_class = max(list(cat2id.values())) + 1
 
 # bev configs
-roi_size = (100, 50)
-bev_h = 100
-bev_w = 200
+roi_size = (60, 30)
+bev_h = 50
+bev_w = 100
 pc_range = [-roi_size[0]/2, -roi_size[1]/2, -3, roi_size[0]/2, roi_size[1]/2, 5]
 
 # vectorize params
@@ -68,7 +68,7 @@ num_points = 20
 permute = True
 
 model = dict(
-    type='StreamMapNet',
+    type='SQDMapNet',
     roi_size=roi_size,
     bev_h=bev_h,
     bev_w=bev_w,
@@ -143,10 +143,10 @@ model = dict(
             ),
     ),
     head_cfg=dict(
-        type='StreamDNMapDetectorHead2',
+        type='SQDMapDetectorHead',
         dn_iter=0,
-        tolerant_noise=0.2,
-        noise_decay_scale=[0.6, 0.6, 0.6],
+        tolerant_noise=0.1,
+        noise_decay_scale=[0.2, 0.2, 0.2],
         num_queries=num_queries,
         embed_dims=embed_dims,
         num_classes=num_class,
@@ -161,7 +161,7 @@ model = dict(
             hidden_dim=embed_dims//2,
             num_queries=num_queries,
             num_classes=num_class,
-            noise_scale=dict(label=0.5, box=0.4, pt=0.0),  # 0.5, 0.4 for DN-DETR
+            noise_scale=dict(label=0.5, box=0.6, pt=0.0),  # 0.5, 0.4 for DN-DETR
             group_cfg=dict(dynamic=True, num_groups=1, num_dn_queries=60),
             bev_h=bev_h, bev_w=bev_w,
             pc_range=pc_range,
@@ -281,6 +281,7 @@ train_pipeline = [
         permute=permute,
     ),
     dict(type='LoadMultiViewImagesFromFiles', to_float32=True),
+    # dict(type='LoadIDFromFiles', root='./datasets/nuScenes/vectors', normalize=True, roi_size=roi_size),
     dict(type='PhotoMetricDistortionMultiViewImage'),
     dict(type='ResizeMultiViewImages',
          size=img_size, # H, W
@@ -335,7 +336,7 @@ eval_config = dict(
 # dataset configs
 data = dict(
     samples_per_gpu=batch_size,
-    workers_per_gpu=2,
+    workers_per_gpu=4,
     train=dict(
         type='NuscDataset',
         data_root='./datasets/nuScenes',
@@ -398,9 +399,10 @@ lr_config = dict(
     warmup_ratio=1.0 / 3,
     min_lr_ratio=3e-3)
 
-evaluation = dict(interval=num_epochs//6*num_iters_per_epoch)
+# evaluation = dict(interval=1)
+evaluation = dict(interval=num_epochs_single_frame*num_iters_per_epoch)
 find_unused_parameters = True #### when use checkpoint, find_unused_parameters must be False
-checkpoint_config = dict(interval=num_epochs//6*num_iters_per_epoch, max_keep_ckpts=1)
+checkpoint_config = dict(interval=num_epochs_single_frame*num_iters_per_epoch, max_keep_ckpts=1)
 
 runner = dict(
     type='IterBasedRunner', max_iters=num_epochs * num_iters_per_epoch)
@@ -413,4 +415,3 @@ log_config = dict(
     ])
 
 SyncBN = False
-# resume_from = '/data/code/StreamMapNet/work_dirs/nusc_baseline_480_60x30_24e/iter_17400.pth'

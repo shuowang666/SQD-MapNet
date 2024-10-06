@@ -2,8 +2,6 @@ _base_ = [
     '../_base_/default_runtime.py'
 ]
 
-# 把上一帧gt转到当前帧后再做DN
-
 # model type
 type = 'Mapper'
 plugin = True
@@ -40,9 +38,9 @@ cat2id = {
 num_class = max(list(cat2id.values())) + 1
 
 # bev configs
-roi_size = (60, 30)
-bev_h = 50
-bev_w = 100
+roi_size = (100, 50)
+bev_h = 100
+bev_w = 200
 pc_range = [-roi_size[0]/2, -roi_size[1]/2, -3, roi_size[0]/2, roi_size[1]/2, 5]
 
 # vectorize params
@@ -70,7 +68,7 @@ num_points = 20
 permute = True
 
 model = dict(
-    type='StreamMapNet',
+    type='SQDMapNet',
     roi_size=roi_size,
     bev_h=bev_h,
     bev_w=bev_w,
@@ -88,7 +86,7 @@ model = dict(
             depth=50,
             num_stages=4,
             out_indices=(1, 2, 3),
-            frozen_stages=1,
+            frozen_stages=-1,
             norm_cfg=norm_cfg,
             norm_eval=True,
             style='caffe',
@@ -145,10 +143,10 @@ model = dict(
             ),
     ),
     head_cfg=dict(
-        type='StreamDNMapDetectorHead2',
-        # dn_iter=0,
-        dn_iter=num_epochs_single_frame*num_iters_per_epoch,
+        type='SQDMapDetectorHead',
+        dn_iter=0,
         tolerant_noise=0.2,
+        noise_decay_scale=[0.7, 0.7, 0.7],
         num_queries=num_queries,
         embed_dims=embed_dims,
         num_classes=num_class,
@@ -164,14 +162,13 @@ model = dict(
             num_queries=num_queries,
             num_classes=num_class,
             noise_scale=dict(label=0.5, box=0.4, pt=0.0),  # 0.5, 0.4 for DN-DETR
-            group_cfg=dict(dynamic=True, num_groups=1, num_dn_queries=30),
+            group_cfg=dict(dynamic=True, num_groups=1, num_dn_queries=60),
             bev_h=bev_h, bev_w=bev_w,
             pc_range=pc_range,
             voxel_size=[0.1, 0.1],
             num_pts_per_vec=num_points,
             rotate_range=0.0,
-            class_spesific=[0.4, 0.4, 0.2],
-            ),
+            noise_decay=True),
         streaming_cfg=dict(
             streaming=True,
             batch_size=batch_size,
@@ -262,7 +259,14 @@ model = dict(
                     ),
                 ),
         ),
-    streaming_cfg=dict(),
+    streaming_cfg=dict(
+        streaming_bev=True,
+        batch_size=batch_size,
+        fusion_cfg=dict(
+            type='ConvGRU',
+            out_channels=bev_embed_dims,
+        )
+    ),
     model_name='SingleStage'
 )
 
@@ -277,7 +281,6 @@ train_pipeline = [
         permute=permute,
     ),
     dict(type='LoadMultiViewImagesFromFiles', to_float32=True),
-    # dict(type='LoadIDFromFiles', root='./datasets/nuScenes/vectors', normalize=True, roi_size=roi_size),
     dict(type='PhotoMetricDistortionMultiViewImage'),
     dict(type='ResizeMultiViewImages',
          size=img_size, # H, W
@@ -332,7 +335,7 @@ eval_config = dict(
 # dataset configs
 data = dict(
     samples_per_gpu=batch_size,
-    workers_per_gpu=4,
+    workers_per_gpu=2,
     train=dict(
         type='NuscDataset',
         data_root='./datasets/nuScenes',
@@ -365,12 +368,11 @@ data = dict(
         pipeline=test_pipeline,
         eval_config=eval_config,
         test_mode=True,
-        seq_split_num=-1,
+        seq_split_num=1,
     ),
     shuffler_sampler=dict(
         type='InfiniteGroupEachSampleInBatchSampler',
         seq_split_num=2,
-        # num_iters_to_seq=0,
         num_iters_to_seq=num_epochs_single_frame*num_iters_per_epoch,
         random_drop=0.0
     ),
@@ -396,9 +398,9 @@ lr_config = dict(
     warmup_ratio=1.0 / 3,
     min_lr_ratio=3e-3)
 
-evaluation = dict(interval=num_epochs_single_frame*num_iters_per_epoch)
+evaluation = dict(interval=num_epochs//6*num_iters_per_epoch)
 find_unused_parameters = True #### when use checkpoint, find_unused_parameters must be False
-checkpoint_config = dict(interval=num_epochs_single_frame*num_iters_per_epoch, max_keep_ckpts=1)
+checkpoint_config = dict(interval=num_epochs//6*num_iters_per_epoch, max_keep_ckpts=1)
 
 runner = dict(
     type='IterBasedRunner', max_iters=num_epochs * num_iters_per_epoch)
@@ -411,4 +413,3 @@ log_config = dict(
     ])
 
 SyncBN = False
-# resume_from = "work_dirs/streamDN_convertCur_new_nusc_480_60x30_24e_Group1_L0.0_B0.0/iter_3480.pth"
